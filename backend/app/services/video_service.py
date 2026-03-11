@@ -1,0 +1,301 @@
+"""
+Video service.
+
+Business logic for video upload, retrieval, and deletion.
+Coordinates between the database and storage layer.
+
+SECURITY:
+- Uploads use chunked streaming (never loads full file into RAM)
+- Filenames are sanitized to prevent path traversal
+- Resolved paths are validated to stay within the upload directory
+"""
+
+import logging
+import os
+import uuid
+from typing import List, Optional
+
+from fastapi import UploadFile
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.core.exceptions import (
+    FileTooLargeError,
+    NotFoundError,
+    ValidationError,
+)
+from app.models.enums import VideoStatus
+from app.models.video import Video
+from app.services.storage_service import StorageService
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+# Chunk size for streaming uploads (1 MB)
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+# Known magic byte signatures for video files
+_VIDEO_SIGNATURES = [
+    (4, b"ftyp"),       # MP4, MOV, M4V, 3GP (ISO Base Media)
+    (0, b"RIFF"),       # AVI (and WAV, but content-type check filters)
+    (0, b"\x1a\x45\xdf\xa3"),  # MKV / WebM (EBML header)
+    (0, b"\x00\x00\x01\xba"),  # MPEG-PS
+    (0, b"\x00\x00\x01\xb3"),  # MPEG-1/2 video
+    (0, b"\x47"),       # MPEG-TS (sync byte)
+]
+
+
+def _validate_file_magic(header: bytes) -> bool:
+    """Check if file header matches known video magic bytes.
+
+    This is a defense-in-depth measure against content-type spoofing.
+    A malicious user could set content_type to 'video/mp4' but upload
+    a PHP script or executable.
+
+    Args:
+        header: First 16+ bytes of the file.
+
+    Returns:
+        True if the header matches any known video signature.
+    """
+    for offset, signature in _VIDEO_SIGNATURES:
+        end = offset + len(signature)
+        if len(header) >= end and header[offset:end] == signature:
+            return True
+    return False
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Strip directory components and dangerous characters from a filename.
+
+    Prevents path traversal attacks like '../../etc/passwd'.
+
+    Args:
+        filename: The raw filename from the upload.
+
+    Returns:
+        A safe filename string (basename only, no directory traversal).
+    """
+    # Use os.path.basename to strip all directory components
+    safe_name = os.path.basename(filename)
+    # Remove null bytes
+    safe_name = safe_name.replace("\x00", "")
+    # Remove any remaining path separators (belt-and-suspenders)
+    safe_name = safe_name.replace("/", "").replace("\\", "")
+    # Fallback if nothing remains
+    if not safe_name or safe_name.startswith("."):
+        safe_name = "upload.mp4"
+    return safe_name
+
+
+def _validate_storage_path(path: str, base_dir: str) -> str:
+    """Validate that a resolved path stays within the allowed base directory.
+
+    Prevents path traversal by resolving symlinks and checking containment.
+
+    Args:
+        path: The target file path.
+        base_dir: The allowed base directory (e.g., upload_dir).
+
+    Returns:
+        The validated absolute path.
+
+    Raises:
+        ValidationError: If the path escapes the base directory.
+    """
+    resolved = os.path.realpath(path)
+    base_resolved = os.path.realpath(base_dir)
+    if not resolved.startswith(base_resolved + os.sep) and resolved != base_resolved:
+        logger.warning(
+            "Path traversal attempt blocked: path=%s base=%s", path, base_dir
+        )
+        raise ValidationError("Invalid file path")
+    return resolved
+
+
+class VideoService:
+    """Encapsulates video management business logic."""
+
+    def __init__(self, db: Session, storage: StorageService | None = None) -> None:
+        """Initialize VideoService with a database session.
+
+        Args:
+            db: SQLAlchemy database session.
+            storage: Optional StorageService instance for dependency injection.
+                     Defaults to a new StorageService if not provided.
+        """
+        self.db = db
+        self.storage = storage or StorageService()
+
+    async def upload_video(
+        self,
+        file: UploadFile,
+        user_id: str,
+    ) -> Video:
+        """Upload a video file and create a database record.
+
+        Uses chunked streaming to avoid loading the entire file into memory.
+        Filenames are sanitized and paths are validated to stay within
+        the upload directory.
+
+        Args:
+            file: The uploaded video file.
+            user_id: ID of the user uploading the video.
+
+        Returns:
+            The created Video model.
+
+        Raises:
+            ValidationError: If the file type is invalid.
+            FileTooLargeError: If the file exceeds the size limit.
+        """
+        # Validate file type
+        allowed_types = {
+            "video/mp4", "video/quicktime", "video/x-msvideo",
+            "video/x-matroska", "video/webm", "video/mpeg",
+        }
+        if file.content_type not in allowed_types:
+            raise ValidationError(
+                f"Unsupported file type: {file.content_type}. "
+                f"Allowed: {', '.join(allowed_types)}"
+            )
+
+        # Sanitize filename and generate unique storage path
+        safe_filename = _sanitize_filename(file.filename or "video.mp4")
+        file_ext = os.path.splitext(safe_filename)[1].lower() or ".mp4"
+        storage_filename = f"{uuid.uuid4()}{file_ext}"
+        storage_path = os.path.join(settings.upload_dir, user_id, storage_filename)
+
+        # Validate path stays within upload directory
+        storage_path = _validate_storage_path(storage_path, settings.upload_dir)
+
+        # Stream file to disk in chunks (never loads full file into RAM)
+        max_bytes = settings.max_upload_size_mb * 1024 * 1024
+        os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+
+        file_size = 0
+        header_buf = b""
+        magic_validated = False
+        try:
+            with open(storage_path, "wb") as dest:
+                while True:
+                    chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+                    if file_size > max_bytes:
+                        # Clean up partial file before raising
+                        dest.close()
+                        os.remove(storage_path)
+                        raise FileTooLargeError(
+                            f"File size exceeds {settings.max_upload_size_mb}MB limit"
+                        )
+                    # Validate magic bytes on the first chunk
+                    if not magic_validated:
+                        header_buf += chunk
+                        if len(header_buf) >= 16:
+                            if not _validate_file_magic(header_buf):
+                                dest.close()
+                                os.remove(storage_path)
+                                raise ValidationError(
+                                    "File content does not match a supported video format"
+                                )
+                            magic_validated = True
+                    dest.write(chunk)
+        except (FileTooLargeError, ValidationError):
+            raise
+        except Exception as exc:
+            # Clean up on any write failure
+            if os.path.exists(storage_path):
+                os.remove(storage_path)
+            logger.error("Upload failed for user %s: %s", user_id, exc)
+            raise
+
+        # Reject files too small to contain valid magic bytes
+        if not magic_validated:
+            if os.path.exists(storage_path):
+                os.remove(storage_path)
+            raise ValidationError(
+                "File content does not match a supported video format"
+            )
+
+        # Create database record
+        video = Video(
+            user_id=user_id,
+            raw_video_path=storage_path,
+            original_filename=safe_filename,
+            file_size_bytes=file_size,
+            status=VideoStatus.UPLOADED,
+        )
+        self.db.add(video)
+        self.db.commit()
+        self.db.refresh(video)
+
+        logger.info(
+            "Video uploaded: id=%s user=%s size=%d filename=%s",
+            video.id, user_id, file_size, safe_filename,
+        )
+        return video
+
+    def get_video(self, video_id: str, user_id: str) -> Video:
+        """Retrieve a video by ID, scoped to the requesting user.
+
+        Args:
+            video_id: The video UUID.
+            user_id: The requesting user's UUID.
+
+        Returns:
+            The Video model.
+
+        Raises:
+            NotFoundError: If the video is not found.
+        """
+        video = (
+            self.db.query(Video)
+            .filter(Video.id == video_id, Video.user_id == user_id)
+            .first()
+        )
+        if not video:
+            raise NotFoundError("Video not found")
+        return video
+
+    def list_videos(self, user_id: str, skip: int = 0, limit: int = 20) -> tuple[List[Video], int]:
+        """List all videos for a user with pagination.
+
+        Args:
+            user_id: The user's UUID.
+            skip: Number of records to skip.
+            limit: Maximum number of records to return.
+
+        Returns:
+            A tuple of (list of videos, total count).
+        """
+        query = self.db.query(Video).filter(Video.user_id == user_id)
+        total = query.count()
+        videos = (
+            query
+            .order_by(Video.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        return videos, total
+
+    def delete_video(self, video_id: str, user_id: str) -> None:
+        """Delete a video and its stored file.
+
+        Args:
+            video_id: The video UUID.
+            user_id: The requesting user's UUID.
+
+        Raises:
+            NotFoundError: If the video is not found.
+        """
+        video = self.get_video(video_id, user_id)
+
+        # Delete file from storage
+        self.storage.delete_file(video.raw_video_path)
+
+        self.db.delete(video)
+        self.db.commit()
+        logger.info("Video deleted: id=%s user=%s", video_id, user_id)
