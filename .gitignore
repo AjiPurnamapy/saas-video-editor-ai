@@ -44,3 +44,7 @@ alembic/versions/*.pyc
 # Logs
 *.log
 logs/
+
+# Database
+*.db
+*.db-journal

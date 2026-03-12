@@ -72,7 +72,10 @@ celery_app.conf.update(
     task_max_retries=3,
 )
 
-# Auto-discover tasks in workers/tasks/
-celery_app.autodiscover_tasks(["workers.tasks"])
+# Explicitly discover video_tasks inside the workers package
+celery_app.autodiscover_tasks(["workers.tasks"], related_name="video_tasks")
+
+# Alternatively, explicitly import to guarantee registration
+import workers.tasks.video_tasks  # noqa
 
 logger.info("Celery app configured: broker=%s", settings.redis_url)

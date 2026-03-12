@@ -46,6 +46,13 @@ def start_job(
     service = JobService(db)
     job = service.create_job(data.video_id, current_user.id)
 
+    # Ensure root project directory is in sys.path so we can import 'workers'
+    import sys
+    import os
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
+
     # Dispatch to Celery worker
     from workers.tasks.video_tasks import process_video
     result = process_video.delay(job.id)
