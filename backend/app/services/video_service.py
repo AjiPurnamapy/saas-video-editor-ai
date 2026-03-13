@@ -282,7 +282,10 @@ class VideoService:
         return videos, total
 
     def delete_video(self, video_id: str, user_id: str) -> None:
-        """Delete a video and its stored file.
+        """Delete a video, its output files, and all database records.
+
+        Refuses to delete if there is an active (queued/processing) job
+        to prevent file corruption while a worker is running.
 
         Args:
             video_id: The video UUID.
@@ -290,10 +293,46 @@ class VideoService:
 
         Raises:
             NotFoundError: If the video is not found.
+            ConflictError: If the video has an active processing job.
         """
+        from app.core.exceptions import ConflictError
+        from app.models.enums import JobStatus
+        from app.models.job import Job
+
         video = self.get_video(video_id, user_id)
 
-        # Delete file from storage
+        # C2 Fix: Block delete while worker is actively processing
+        active_job = (
+            self.db.query(Job)
+            .filter(
+                Job.video_id == video_id,
+                Job.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING]),
+            )
+            .first()
+        )
+        if active_job:
+            raise ConflictError(
+                "Cannot delete video with an active processing job. "
+                "Cancel the job first."
+            )
+
+        # C3 Fix: Delete output files from disk before DB cascade
+        import shutil
+        video_dir = os.path.dirname(video.raw_video_path)
+        outputs_dir = os.path.join(video_dir, "outputs")
+        if os.path.isdir(outputs_dir):
+            for job in video.jobs:
+                job_output_dir = os.path.join(outputs_dir, str(job.id))
+                if os.path.isdir(job_output_dir):
+                    shutil.rmtree(job_output_dir, ignore_errors=True)
+                    logger.debug("Deleted output dir: %s", job_output_dir)
+            # Remove outputs dir if empty
+            try:
+                os.rmdir(outputs_dir)
+            except OSError:
+                pass
+
+        # Delete raw video file
         self.storage.delete_file(video.raw_video_path)
 
         self.db.delete(video)

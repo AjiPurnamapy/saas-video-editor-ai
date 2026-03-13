@@ -8,6 +8,10 @@ main.py and route files.
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+import os
+
+# Disable limiter entirely during tests by checking an env var we'll set in conftest
+_is_testing = os.getenv("TESTING") == "1"
 
 # Shared limiter instance — imported by route modules and main.py
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_remote_address, enabled=not _is_testing)

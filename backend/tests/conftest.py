@@ -7,17 +7,21 @@ and helper fixtures for creating authenticated test sessions.
 
 import os
 import uuid
+import uuid as uuid_lib
 from typing import Generator
 
 import pytest
+
+# SET BEFORE APP IMPORT
+os.environ["TESTING"] = "1"
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models.base import Base
-from app.database import get_db
 from app.main import app
-
+from app.database import get_db
+from app.models.base import Base
 # ---------------------------------------------------------------------------
 # Database fixtures
 # ---------------------------------------------------------------------------
@@ -56,6 +60,7 @@ def db_session() -> Generator[Session, None, None]:
 # FastAPI test client
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="function")
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     """Provide a FastAPI TestClient with the test DB injected.
@@ -70,8 +75,15 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
             pass
 
     app.dependency_overrides[get_db] = _override_get_db
+    
+    # Disable rate limiting cleanly for testing
+    from app.core.rate_limiter import limiter
+    limiter.enabled = False
+    
     with TestClient(app) as test_client:
         yield test_client
+    
+    limiter.enabled = True
     app.dependency_overrides.clear()
 
 

@@ -72,19 +72,23 @@ def get_file_size_mb(path: str) -> Optional[float]:
 def cleanup_temp_files(*paths: str) -> None:
     """Delete temporary files.
 
-    Silently ignores files that don't exist.
+    Logs warnings for files that cannot be deleted (e.g., locked by
+    another process). Silently ignores files that don't exist.
 
     Args:
         *paths: File paths to delete.
     """
+    import logging
+    _logger = logging.getLogger(__name__)
+
     for path in paths:
         try:
             if os.path.isfile(path):
                 os.remove(path)
             elif os.path.isdir(path):
                 shutil.rmtree(path)
-        except OSError:
-            pass
+        except OSError as exc:
+            _logger.warning("Failed to clean up temp file: %s — %s", path, exc)
 
 
 def create_temp_directory(base_dir: str = "/tmp") -> str:

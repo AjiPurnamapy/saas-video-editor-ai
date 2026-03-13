@@ -1,8 +1,11 @@
 """
 Job API routes.
 
-Endpoints for starting and monitoring video processing jobs.
+Endpoints for starting, monitoring, and cancelling video processing jobs.
 """
+
+import os
+import sys
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
@@ -10,7 +13,20 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.database import get_db
 from app.models.user import User
-from app.schemas.job_schema import JobResponse, JobStartRequest, JobStartResponse
+
+# H2 Fix: Centralize sys.path setup at module level (not per-request)
+# This ensures 'workers' package is importable when job_routes is loaded.
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+from app.schemas.job_schema import (
+    JobCancelResponse,
+    JobResponse,
+    JobStartRequest,
+    JobStartResponse,
+)
 from app.services.job_service import JobService
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -45,13 +61,6 @@ def start_job(
     """
     service = JobService(db)
     job = service.create_job(data.video_id, current_user.id)
-
-    # Ensure root project directory is in sys.path so we can import 'workers'
-    import sys
-    import os
-    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    if root_dir not in sys.path:
-        sys.path.insert(0, root_dir)
 
     # Dispatch to Celery worker
     from workers.tasks.video_tasks import process_video
@@ -92,3 +101,36 @@ def get_job(
     service = JobService(db)
     job = service.get_job(job_id, current_user.id)
     return JobResponse.model_validate(job)
+
+
+@router.post(
+    "/{job_id}/cancel",
+    response_model=JobCancelResponse,
+    summary="Cancel a processing job",
+)
+def cancel_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> JobCancelResponse:
+    """Cancel a queued or in-progress video processing job.
+
+    Sets the job status to 'cancelled'. If the worker is currently
+    processing this job, it will stop at the next pipeline checkpoint
+    and clean up temporary files.
+
+    Args:
+        job_id: The job UUID to cancel.
+        db: Database session (injected).
+        current_user: The authenticated user (injected).
+
+    Returns:
+        Cancellation confirmation with the updated job status.
+    """
+    service = JobService(db)
+    job = service.cancel_job(job_id, current_user.id)
+    return JobCancelResponse(
+        id=job.id,
+        video_id=job.video_id,
+        status=job.status,
+    )

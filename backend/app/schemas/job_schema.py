@@ -42,3 +42,12 @@ class JobStartResponse(BaseModel):
     status: str
     task_id: Optional[str] = None
     message: str = "Processing job started"
+
+
+class JobCancelResponse(BaseModel):
+    """Response after cancelling a processing job."""
+
+    id: str
+    video_id: str
+    status: str
+    message: str = "Processing job cancelled"

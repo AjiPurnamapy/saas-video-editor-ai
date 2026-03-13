@@ -1,91 +1,109 @@
 """
 Storage service.
 
-Abstraction layer for file storage operations. Currently implements
-local filesystem storage with an interface ready for S3 migration.
+Abstraction layer for file storage operations. Uses the Strategy pattern
+to support multiple storage backends (local filesystem, S3, etc.)
+without changing consuming code.
+
+Architecture:
+    StorageBackend (ABC)        ← interface
+      └── LocalStorageBackend   ← concrete (current)
+      └── S3StorageBackend      ← concrete (future)
+
+    StorageService(backend)     ← facade used by services/routes
 """
 
+import logging
 import os
 from typing import Optional
 
-from app.config import get_settings
+from app.services.storage_base import StorageBackend
 
-settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
-class StorageService:
-    """File storage abstraction.
+class LocalStorageBackend(StorageBackend):
+    """Local filesystem storage backend.
 
-    Currently uses local filesystem storage. In production, this
-    would be swapped for an S3-compatible implementation via
-    boto3 (e.g., AWS S3, MinIO, DigitalOcean Spaces).
+    Stores files on the local disk. This is the default backend
+    for development and single-server deployments.
     """
 
     def save_file(self, content: bytes, path: str) -> str:
-        """Save file content to storage.
-
-        Creates parent directories if they don't exist.
-
-        Args:
-            content: Raw file bytes.
-            path: Target storage path (relative or absolute).
-
-        Returns:
-            The path where the file was saved.
-        """
+        """Save file content to local filesystem."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             f.write(content)
+        logger.debug("File saved: %s (%d bytes)", path, len(content))
         return path
 
     def read_file(self, path: str) -> Optional[bytes]:
-        """Read file content from storage.
-
-        Args:
-            path: The file path to read.
-
-        Returns:
-            File contents as bytes, or None if the file doesn't exist.
-        """
+        """Read file content from local filesystem."""
         if not os.path.exists(path):
             return None
         with open(path, "rb") as f:
             return f.read()
 
     def delete_file(self, path: str) -> bool:
-        """Delete a file from storage.
-
-        Args:
-            path: The file path to delete.
-
-        Returns:
-            True if the file was deleted, False if it didn't exist.
-        """
+        """Delete a file from local filesystem."""
         if os.path.exists(path):
             os.remove(path)
+            logger.debug("File deleted: %s", path)
             return True
         return False
 
     def file_exists(self, path: str) -> bool:
-        """Check if a file exists in storage.
-
-        Args:
-            path: The file path to check.
-
-        Returns:
-            True if the file exists.
-        """
+        """Check if a file exists on local filesystem."""
         return os.path.exists(path)
 
     def get_file_size(self, path: str) -> Optional[int]:
-        """Get the size of a file in bytes.
-
-        Args:
-            path: The file path.
-
-        Returns:
-            File size in bytes, or None if the file doesn't exist.
-        """
+        """Get file size from local filesystem."""
         if os.path.exists(path):
             return os.path.getsize(path)
         return None
+
+
+class StorageService:
+    """File storage facade.
+
+    Delegates all operations to the injected storage backend.
+    Defaults to LocalStorageBackend if no backend is provided.
+
+    Usage:
+        # Default (local storage)
+        storage = StorageService()
+
+        # With explicit backend
+        storage = StorageService(backend=LocalStorageBackend())
+
+        # Future S3 support
+        storage = StorageService(backend=S3StorageBackend(bucket="my-bucket"))
+    """
+
+    def __init__(self, backend: StorageBackend | None = None) -> None:
+        """Initialize with a storage backend.
+
+        Args:
+            backend: Storage backend implementation. Defaults to local.
+        """
+        self._backend = backend or LocalStorageBackend()
+
+    def save_file(self, content: bytes, path: str) -> str:
+        """Save file content to storage."""
+        return self._backend.save_file(content, path)
+
+    def read_file(self, path: str) -> Optional[bytes]:
+        """Read file content from storage."""
+        return self._backend.read_file(path)
+
+    def delete_file(self, path: str) -> bool:
+        """Delete a file from storage."""
+        return self._backend.delete_file(path)
+
+    def file_exists(self, path: str) -> bool:
+        """Check if a file exists in storage."""
+        return self._backend.file_exists(path)
+
+    def get_file_size(self, path: str) -> Optional[int]:
+        """Get file size in bytes."""
+        return self._backend.get_file_size(path)

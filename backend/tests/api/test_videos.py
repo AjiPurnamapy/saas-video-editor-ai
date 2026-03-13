@@ -10,13 +10,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-def _make_fake_video(size_bytes: int = 1024, filename: str = "test.mp4") -> tuple:
-    """Create a fake video file for upload testing.
-
-    Returns:
-        A tuple of (filename, file-like object, content_type).
+def _make_fake_video(filename="test.mp4") -> tuple:
+    """Return a tuple suitable for httpx files payload.
+    
+    Includes MP4 magic bytes (ftyp) to pass the file_utils.validate_file_type
+    security checks which use python-magic.
     """
-    content = b"\x00" * size_bytes
+    # Fake MP4 magic bytes: 00 00 00 18 66 74 79 70 69 73 6f 6d
+    mp4_magic_bytes = b"\x00\x00\x00\x18ftypisom"
+    content = mp4_magic_bytes + b"\x00" * 100
     return (filename, io.BytesIO(content), "video/mp4")
 
 
@@ -55,7 +57,9 @@ class TestUpload:
 
     def test_upload_path_traversal_filename(self, auth_client: TestClient):
         """Filenames with path traversal are sanitized."""
-        file = ("../../etc/passwd", io.BytesIO(b"\x00" * 100), "video/mp4")
+        mp4_magic = b"\x00\x00\x00\x18ftypisom"
+        content = mp4_magic + b"\x00" * 100
+        file = ("../../etc/passwd", io.BytesIO(content), "video/mp4")
         response = auth_client.post(
             "/api/videos/upload",
             files={"file": file},
@@ -126,18 +130,20 @@ class TestDeleteVideo:
     """Tests for DELETE /api/videos/{video_id}."""
 
     def test_delete_video_success(self, auth_client: TestClient):
-        """Deleting a video returns 200 and removes it."""
-        upload = auth_client.post(
+        """Deleting an owned video returns 204."""
+        upload_resp = auth_client.post(
             "/api/videos/upload",
             files={"file": _make_fake_video()},
         )
-        video_id = upload.json()["id"]
-        response = auth_client.delete(f"/api/videos/{video_id}")
-        assert response.status_code == 200
+        assert upload_resp.status_code == 201
+        video_id = upload_resp.json()["id"]
+
+        del_resp = auth_client.delete(f"/api/videos/{video_id}")
+        assert del_resp.status_code == 200
 
         # Verify it's gone
-        get_response = auth_client.get(f"/api/videos/{video_id}")
-        assert get_response.status_code == 404
+        get_resp = auth_client.get(f"/api/videos/{video_id}")
+        assert get_resp.status_code == 404
 
     def test_delete_video_not_found(self, auth_client: TestClient):
         """Deleting a non-existent video returns 404."""

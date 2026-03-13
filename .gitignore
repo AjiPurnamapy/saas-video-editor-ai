@@ -48,3 +48,7 @@ logs/
 # Database
 *.db
 *.db-journal
+
+# Celery
+celerybeat-schedule
+celerybeat-schedule.*

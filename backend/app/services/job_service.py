@@ -57,13 +57,15 @@ class JobService:
         if not video:
             raise NotFoundError("Video not found")
 
-        # Check for existing active job
+        # Check for existing active job (uses SELECT FOR UPDATE to prevent
+        # race conditions where two requests pass this check simultaneously)
         active_job = (
             self.db.query(Job)
             .filter(
                 Job.video_id == video_id,
                 Job.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING]),
             )
+            .with_for_update()
             .first()
         )
         if active_job:
@@ -174,3 +176,56 @@ class JobService:
             job.task_id = task_id
             self.db.commit()
             logger.info("Task ID saved: job=%s task=%s", job_id, task_id)
+
+    def cancel_job(self, job_id: str, user_id: str) -> Job:
+        """Cancel a queued or processing job.
+
+        Sets the job status to CANCELLED and revokes the Celery task.
+        The worker checks for cancellation between each pipeline step.
+
+        Args:
+            job_id: The job UUID.
+            user_id: The requesting user's UUID (for ownership check).
+
+        Returns:
+            The updated Job model.
+
+        Raises:
+            NotFoundError: If the job is not found or unauthorized.
+            ConflictError: If the job is not in a cancellable state.
+        """
+        # Ownership check via join
+        job = (
+            self.db.query(Job)
+            .join(Video, Job.video_id == Video.id)
+            .filter(Job.id == job_id, Video.user_id == user_id)
+            .first()
+        )
+        if not job:
+            raise NotFoundError("Job not found")
+
+        # Only queued or processing jobs can be cancelled
+        if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
+            raise ConflictError(
+                f"Cannot cancel job with status '{job.status}'. "
+                f"Only queued or processing jobs can be cancelled."
+            )
+
+        # Update status
+        job.status = JobStatus.CANCELLED
+        job.error_message = "Cancelled by user"
+        self.db.commit()
+        self.db.refresh(job)
+
+        # Revoke the Celery task (signal worker to stop)
+        if job.task_id:
+            try:
+                from workers.celery_app import celery_app
+                celery_app.control.revoke(job.task_id, terminate=False)
+                logger.info("Celery task revoked: task=%s", job.task_id)
+            except Exception as exc:
+                # Non-critical: worker will check DB status anyway
+                logger.warning("Failed to revoke task %s: %s", job.task_id, exc)
+
+        logger.info("Job cancelled: id=%s user=%s", job_id, user_id)
+        return job
