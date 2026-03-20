@@ -3,12 +3,17 @@ Video API routes.
 
 Endpoints for uploading, listing, retrieving, and deleting videos.
 All endpoints require authentication.
+
+SECURITY (C-02 FIX):
+- All endpoints are rate-limited to prevent resource exhaustion
+- Upload: 10/min, 50/hour | List/Get: 60/min | Delete: 20/min
 """
 
-from fastapi import APIRouter, Depends, UploadFile, File, Query, status
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
+from app.core.rate_limiter import limiter
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user_schema import MessageResponse
@@ -28,7 +33,10 @@ router = APIRouter(prefix="/videos", tags=["Videos"])
     status_code=status.HTTP_201_CREATED,
     summary="Upload a video",
 )
+@limiter.limit("10/minute")
+@limiter.limit("50/hour")
 async def upload_video(
+    request: Request,
     file: UploadFile = File(..., description="Video file to upload"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -37,8 +45,10 @@ async def upload_video(
 
     Accepts common video formats (MP4, MOV, AVI, MKV, WebM, MPEG).
     Maximum file size is configurable via MAX_UPLOAD_SIZE_MB.
+    Rate limited to 10 uploads per minute and 50 per hour.
 
     Args:
+        request: FastAPI request (required by slowapi limiter).
         file: The uploaded video file.
         db: Database session (injected).
         current_user: The authenticated user (injected).
@@ -61,7 +71,9 @@ async def upload_video(
     response_model=VideoListResponse,
     summary="List user videos",
 )
+@limiter.limit("60/minute")
 def list_videos(
+    request: Request,
     skip: int = Query(0, ge=0, description="Records to skip"),
     limit: int = Query(20, ge=1, le=100, description="Records per page"),
     db: Session = Depends(get_db),
@@ -70,8 +82,10 @@ def list_videos(
     """List all videos uploaded by the current user.
 
     Supports pagination via skip/limit parameters.
+    Rate limited to 60 requests per minute.
 
     Args:
+        request: FastAPI request (required by slowapi limiter).
         skip: Number of records to skip.
         limit: Maximum records to return (1-100).
         db: Database session (injected).
@@ -93,7 +107,9 @@ def list_videos(
     response_model=VideoResponse,
     summary="Get video details",
 )
+@limiter.limit("60/minute")
 def get_video(
+    request: Request,
     video_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -101,8 +117,10 @@ def get_video(
     """Retrieve details of a specific video.
 
     Only returns videos owned by the authenticated user.
+    Rate limited to 60 requests per minute.
 
     Args:
+        request: FastAPI request (required by slowapi limiter).
         video_id: The video UUID.
         db: Database session (injected).
         current_user: The authenticated user (injected).
@@ -120,7 +138,9 @@ def get_video(
     response_model=MessageResponse,
     summary="Delete a video",
 )
+@limiter.limit("20/minute")
 def delete_video(
+    request: Request,
     video_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -129,8 +149,10 @@ def delete_video(
 
     Only allows deletion of videos owned by the authenticated user.
     Also removes the associated file from storage.
+    Rate limited to 20 requests per minute.
 
     Args:
+        request: FastAPI request (required by slowapi limiter).
         video_id: The video UUID.
         db: Database session (injected).
         current_user: The authenticated user (injected).

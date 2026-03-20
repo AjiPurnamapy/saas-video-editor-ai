@@ -3,11 +3,17 @@ Application configuration module.
 
 Loads settings from environment variables using pydantic-settings.
 All configuration is centralized here for easy management.
+
+SECURITY:
+- secret_key is validated at startup to prevent insecure defaults in production
+- cookie_secure is enforced in production to require HTTPS
 """
 
+import os
 from functools import lru_cache
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -22,7 +28,6 @@ class Settings(BaseSettings):
     # --- Database ---
     database_url: str = "postgresql://postgres:postgres@localhost:5432/ai_video_editor"
     database_echo: bool = False
-    
 
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
@@ -47,6 +52,40 @@ class Settings(BaseSettings):
     # --- Uploads ---
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 500
+
+    # ---- C-01 FIX: Validate security settings at startup ----
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """Block startup if secret_key is insecure in non-development environments."""
+        insecure_defaults = {
+            "change-me-to-a-random-64-char-string",
+            "secret",
+            "dev",
+            "",
+        }
+        env = os.getenv("APP_ENV", "development")
+        # Only enforce in non-development environments
+        if env not in ("development", "testing") and v in insecure_defaults:
+            raise ValueError(
+                "SECRET_KEY must not use a default value in production/staging. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\""
+            )
+        if env not in ("development", "testing") and len(v) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters.")
+        return v
+
+    @field_validator("cookie_secure")
+    @classmethod
+    def validate_cookie_secure(cls, v: bool) -> bool:
+        """Enforce secure cookies in production (requires HTTPS)."""
+        env = os.getenv("APP_ENV", "development")
+        if env == "production" and not v:
+            raise ValueError(
+                "COOKIE_SECURE must be True in production (requires HTTPS)."
+            )
+        return v
 
     model_config = {
         # Check current dir first, then parent dir for root .env

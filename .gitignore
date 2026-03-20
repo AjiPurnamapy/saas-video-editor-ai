@@ -52,3 +52,6 @@ logs/
 # Celery
 celerybeat-schedule
 celerybeat-schedule.*
+
+# Audit
+audit_security.md

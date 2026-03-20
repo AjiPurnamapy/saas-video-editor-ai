@@ -4,21 +4,23 @@ Authentication service.
 Business logic for user registration, login, and session management.
 All database and security operations are encapsulated here.
 
-SECURITY: Failed login attempts are logged for audit trail purposes.
+SECURITY:
+- Failed login attempts are logged for audit trail purposes.
+- H-04 FIX: Password change invalidates ALL active sessions.
 """
 
 import logging
 
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AuthenticationError, ConflictError
+from app.core.exceptions import AuthenticationError, ConflictError, NotFoundError
 from app.core.security import (
     check_needs_rehash,
     hash_password,
     verify_password,
     generate_session_token,
 )
-from app.core.session_manager import create_session, delete_session
+from app.core.session_manager import create_session, delete_session, delete_all_user_sessions
 from app.models.user import User
 from app.schemas.user_schema import UserRegisterRequest, UserLoginRequest
 
@@ -124,3 +126,40 @@ class AuthService:
         """
         delete_session(session_id)
         logger.info("Session destroyed: %s...%s", session_id[:8], session_id[-4:])
+
+    def change_password(
+        self,
+        user_id: str,
+        old_password: str,
+        new_password: str,
+    ) -> None:
+        """Change a user's password and invalidate all sessions.
+
+        H-04 FIX: After changing the password, ALL active sessions
+        are destroyed — including any sessions created by an attacker.
+
+        Args:
+            user_id: The UUID of the user.
+            old_password: Current password for verification.
+            new_password: New password to set.
+
+        Raises:
+            NotFoundError: If the user does not exist.
+            AuthenticationError: If the old password is wrong.
+        """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise NotFoundError("User not found")
+
+        if not verify_password(old_password, user.password_hash):
+            raise AuthenticationError("Current password is incorrect")
+
+        user.password_hash = hash_password(new_password)
+        self.db.commit()
+
+        # CRITICAL: Invalidate ALL sessions — kills attacker sessions
+        count = delete_all_user_sessions(user_id)
+        logger.info(
+            "Password changed, invalidated %d sessions: user=%s",
+            count, user_id,
+        )

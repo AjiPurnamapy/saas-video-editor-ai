@@ -4,16 +4,22 @@ FFmpeg utility functions.
 Wrappers around FFmpeg CLI for common video processing operations.
 All functions use subprocess to call FFmpeg and return structured results.
 
-SECURITY: All user-provided inputs are sanitized before passing to
-subprocess. File paths are validated, resolutions are regex-checked,
-and all calls go through a single safe wrapper with a timeout.
+SECURITY:
+- All user-provided inputs are sanitized before passing to subprocess.
+- File paths are validated, resolutions are regex-checked.
+- All calls go through a single safe wrapper with a timeout.
+- C-04 FIX: FFmpeg runs with restricted environment (no credentials)
+- C-04 FIX: Privilege drop on Linux when running as root
+- H-03 FIX: Output extensions whitelisted, UUID-based filenames
 """
 
 import json
 import logging
 import os
+import platform
 import re
 import subprocess
+import uuid as _uuid
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -24,6 +30,61 @@ DEFAULT_TIMEOUT = 600  # 10 minutes
 # Regex patterns for input validation
 _RESOLUTION_PATTERN = re.compile(r"^\d{2,5}x\d{2,5}$")
 _SAFE_THRESHOLD_PATTERN = re.compile(r"^-?\d{1,3}dB$")
+
+# H-03 FIX: Only allow known video/audio output extensions
+_ALLOWED_OUTPUT_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".wav", ".aac"}
+
+
+def _get_restricted_env() -> dict:
+    """Build a restricted environment dict for FFmpeg subprocess.
+
+    C-04 FIX: FFmpeg processes only get PATH, HOME, and TMPDIR.
+    Credentials (DATABASE_URL, SECRET_KEY, REDIS_URL, etc.) are
+    NOT passed to the FFmpeg process.
+    """
+    if platform.system() == "Windows":
+        # Windows needs SystemRoot and TEMP at minimum
+        return {
+            "PATH": os.environ.get("PATH", ""),
+            "SystemRoot": os.environ.get("SystemRoot", r"C:\Windows"),
+            "TEMP": os.environ.get("TEMP", r"C:\Windows\Temp"),
+            "TMP": os.environ.get("TMP", r"C:\Windows\Temp"),
+        }
+    return {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/tmp",
+        "TMPDIR": "/tmp",
+    }
+
+
+def _get_preexec_fn():
+    """Return a preexec_fn that drops privileges on Linux if running as root.
+
+    C-04 FIX: If the worker is running as root (common in Docker),
+    FFmpeg will be dropped to a less privileged user.
+    Returns None on Windows or if not running as root.
+    """
+    if platform.system() == "Windows":
+        return None
+
+    if os.getuid() != 0:
+        return None
+
+    try:
+        import pwd
+        import grp
+        ffmpeg_uid = pwd.getpwnam("nobody").pw_uid
+        ffmpeg_gid = grp.getgrnam("nogroup").gr_gid
+
+        def drop_privileges():
+            os.setgid(ffmpeg_gid)
+            os.setuid(ffmpeg_uid)
+
+        return drop_privileges
+    except (KeyError, ImportError):
+        # User/group doesn't exist or pwd/grp not available
+        logger.warning("Cannot drop FFmpeg privileges: 'nobody'/'nogroup' user not found")
+        return None
 
 
 def _validate_file_path(path: str, label: str = "path") -> None:
@@ -86,6 +147,9 @@ def _run_ffmpeg(
     All FFmpeg calls MUST go through this wrapper. It enforces
     a timeout, captures output, and avoids shell execution.
 
+    C-04 FIX: FFmpeg runs with restricted environment and
+    dropped privileges when possible.
+
     Args:
         args: List of command-line arguments (without 'ffmpeg' prefix).
         check: If True, raise CalledProcessError on non-zero exit.
@@ -101,14 +165,22 @@ def _run_ffmpeg(
     """
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"] + args
     logger.debug("Running FFmpeg: %s", " ".join(cmd))
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=check,
-        timeout=timeout,
-        shell=False,  # Explicit: never use shell
-    )
+
+    run_kwargs = {
+        "capture_output": True,
+        "text": True,
+        "check": check,
+        "timeout": timeout,
+        "shell": False,  # Explicit: never use shell
+        "env": _get_restricted_env(),  # C-04: no credentials leak
+    }
+
+    # C-04: Drop privileges on Linux if running as root
+    preexec = _get_preexec_fn()
+    if preexec:
+        run_kwargs["preexec_fn"] = preexec
+
+    return subprocess.run(cmd, **run_kwargs)
 
 
 def _run_ffprobe(
@@ -116,6 +188,8 @@ def _run_ffprobe(
     timeout: int = 60,
 ) -> subprocess.CompletedProcess:
     """Execute an FFprobe command safely.
+
+    C-04 FIX: Also runs with restricted environment.
 
     Args:
         args: List of command-line arguments (without 'ffprobe' prefix).
@@ -128,14 +202,21 @@ def _run_ffprobe(
         subprocess.TimeoutExpired: If the process exceeds the timeout.
     """
     cmd = ["ffprobe", "-hide_banner"] + args
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=timeout,
-        shell=False,
-    )
+
+    run_kwargs = {
+        "capture_output": True,
+        "text": True,
+        "check": True,
+        "timeout": timeout,
+        "shell": False,
+        "env": _get_restricted_env(),  # C-04: no credentials leak
+    }
+
+    preexec = _get_preexec_fn()
+    if preexec:
+        run_kwargs["preexec_fn"] = preexec
+
+    return subprocess.run(cmd, **run_kwargs)
 
 
 def extract_audio(
@@ -208,7 +289,6 @@ def cut_video(
     os.makedirs(output_dir, exist_ok=True)
 
     output_paths = []
-    base_name = os.path.splitext(os.path.basename(video_path))[0]
 
     for i, ts in enumerate(timestamps):
         start = float(ts["start"])
@@ -216,7 +296,8 @@ def cut_video(
         if start < 0 or end < 0 or end <= start:
             raise ValueError(f"Invalid timestamp at index {i}: start={start}, end={end}")
 
-        output_path = os.path.join(output_dir, f"{base_name}_clip_{i:03d}.mp4")
+        # H-03 FIX: UUID-based filename — not derived from user input
+        output_path = os.path.join(output_dir, f"{_uuid.uuid4().hex}_clip_{i:03d}.mp4")
         _run_ffmpeg(
             [
                 "-i", video_path,
@@ -366,8 +447,14 @@ def resize_video(
     width, height = _validate_resolution(resolution)
 
     if output_path is None:
-        base, ext = os.path.splitext(video_path)
-        output_path = f"{base}_resized{ext}"
+        # H-03 FIX: UUID-based filename with forced .mp4 extension
+        directory = os.path.dirname(video_path)
+        output_path = os.path.join(directory, f"{_uuid.uuid4().hex}_resized.mp4")
+    else:
+        # Validate user-provided extension against whitelist
+        ext = os.path.splitext(output_path)[1].lower()
+        if ext not in _ALLOWED_OUTPUT_EXTENSIONS:
+            raise ValueError(f"Output extension not allowed: {ext}")
     _validate_file_path(output_path, "output_path")
 
     _run_ffmpeg(

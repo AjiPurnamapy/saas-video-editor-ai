@@ -54,3 +54,18 @@ class MessageResponse(BaseModel):
 
     message: str
     detail: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    """H-04 FIX: Request body for changing password."""
+
+    old_password: str = Field(
+        ...,
+        description="Current password for verification",
+    )
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 characters)",
+    )

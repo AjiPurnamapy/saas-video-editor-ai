@@ -17,10 +17,12 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.core.auth import get_current_user
+from app.core.csrf import generate_csrf_token, set_csrf_cookie
 from app.database import get_db
 from app.core.rate_limiter import limiter
 from app.models.user import User
 from app.schemas.user_schema import (
+    ChangePasswordRequest,
     MessageResponse,
     UserLoginRequest,
     UserRegisterRequest,
@@ -111,6 +113,10 @@ def login(
         path="/",
     )
 
+    # H-01 FIX: Set CSRF cookie (readable by JS for header inclusion)
+    csrf_token = generate_csrf_token()
+    set_csrf_cookie(response, csrf_token, settings)
+
     return UserResponse.model_validate(user)
 
 
@@ -169,3 +175,41 @@ def get_me(
         The user's public information.
     """
     return UserResponse.model_validate(current_user)
+
+
+@router.post(
+    "/change-password",
+    response_model=MessageResponse,
+    summary="Change password",
+)
+@limiter.limit("5/minute")
+def change_password(
+    request: Request,
+    data: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MessageResponse:
+    """Change the current user's password.
+
+    H-04 FIX: After changing the password, ALL active sessions are
+    invalidated — including any created by an attacker.
+    The user must log in again with the new password.
+    Rate limited to 5 requests per minute.
+
+    Args:
+        request: FastAPI request (required by slowapi limiter).
+        data: Old and new password.
+        db: Database session (injected).
+        current_user: The authenticated user (injected).
+
+    Returns:
+        A confirmation message.
+    """
+    service = AuthService(db)
+    service.change_password(
+        user_id=current_user.id,
+        old_password=data.old_password,
+        new_password=data.new_password,
+    )
+    logger.info("Password changed: user=%s", current_user.id)
+    return MessageResponse(message="Password changed. Please log in again.")

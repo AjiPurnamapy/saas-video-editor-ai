@@ -28,6 +28,9 @@ _redis_client = redis.Redis(connection_pool=_pool)
 # Key prefix to namespace session keys in Redis
 SESSION_PREFIX = "session:"
 
+# H-04 FIX: Prefix for per-user session index (Redis SET)
+SESSION_USER_INDEX_PREFIX = "user_sessions:"
+
 
 def _session_key(session_id: str) -> str:
     """Build the Redis key for a session.
@@ -68,6 +71,11 @@ def create_session(
         ex=settings.session_max_age_seconds,
     )
 
+    # H-04 FIX: Index session under user for bulk invalidation
+    user_index_key = f"{SESSION_USER_INDEX_PREFIX}{user_id}"
+    _redis_client.sadd(user_index_key, session_id)
+    _redis_client.expire(user_index_key, settings.session_max_age_seconds)
+
 
 def get_session(session_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve a session from Redis.
@@ -107,3 +115,32 @@ def refresh_session(session_id: str) -> bool:
     """
     key = _session_key(session_id)
     return bool(_redis_client.expire(key, settings.session_max_age_seconds))
+
+
+def delete_all_user_sessions(user_id: str) -> int:
+    """Invalidate ALL active sessions for a user.
+
+    H-04 FIX: Called when:
+    - User changes password (kills attacker sessions)
+    - User requests "logout all devices"
+    - Admin forces account lockout
+
+    Args:
+        user_id: The user's UUID.
+
+    Returns:
+        Number of sessions invalidated.
+    """
+    user_index_key = f"{SESSION_USER_INDEX_PREFIX}{user_id}"
+    session_ids = _redis_client.smembers(user_index_key)
+
+    if not session_ids:
+        return 0
+
+    pipe = _redis_client.pipeline()
+    for sid in session_ids:
+        pipe.delete(_session_key(sid))
+    pipe.delete(user_index_key)
+    pipe.execute()
+
+    return len(session_ids)

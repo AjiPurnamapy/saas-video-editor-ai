@@ -8,8 +8,10 @@ SECURITY:
 - Uploads use chunked streaming (never loads full file into RAM)
 - Filenames are sanitized to prevent path traversal
 - Resolved paths are validated to stay within the upload directory
+- C-03 FIX: Upload paths hashed with SHA-256 + directory sharding
 """
 
+import hashlib
 import logging
 import os
 import uuid
@@ -33,6 +35,10 @@ settings = get_settings()
 
 # Chunk size for streaming uploads (1 MB)
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+# H-05 FIX: Minimum file size to prevent invalid/empty uploads
+MIN_FILE_SIZE_BYTES = 1024 * 10  # 10KB — no valid video is smaller
+MAX_FILENAME_LENGTH = 255
 
 # Known magic byte signatures for video files
 _VIDEO_SIGNATURES = [
@@ -113,6 +119,34 @@ def _validate_storage_path(path: str, base_dir: str) -> str:
     return resolved
 
 
+def _build_storage_path(user_id: str, filename: str, upload_dir: str) -> str:
+    """Build an unpredictable storage path with directory sharding.
+
+    C-03 FIX: Instead of exposing user_id directly in the path,
+    we hash it with SHA-256. The first 4 hex chars create a 2-level
+    shard (256 * 256 = 65,536 directories) to prevent filesystem
+    bottleneck at scale.
+
+    Structure: uploads/{shard1}/{shard2}/{user_hash}/{uuid}.ext
+
+    Args:
+        user_id: The user's UUID.
+        filename: The sanitized filename (used only for extension).
+        upload_dir: The base upload directory.
+
+    Returns:
+        The full storage path.
+    """
+    user_hash = hashlib.sha256(user_id.encode()).hexdigest()
+    shard1 = user_hash[:2]
+    shard2 = user_hash[2:4]
+
+    ext = os.path.splitext(filename)[1].lower() or ".mp4"
+    unique_name = f"{uuid.uuid4().hex}{ext}"
+
+    return os.path.join(upload_dir, shard1, shard2, user_hash, unique_name)
+
+
 class VideoService:
     """Encapsulates video management business logic."""
 
@@ -149,6 +183,13 @@ class VideoService:
             ValidationError: If the file type is invalid.
             FileTooLargeError: If the file exceeds the size limit.
         """
+        # H-05 FIX: Validate filename before touching filesystem
+        raw_filename = file.filename or "video.mp4"
+        if len(raw_filename) > MAX_FILENAME_LENGTH:
+            raise ValidationError(
+                f"Filename too long (max {MAX_FILENAME_LENGTH} characters)"
+            )
+
         # Validate file type
         allowed_types = {
             "video/mp4", "video/quicktime", "video/x-msvideo",
@@ -161,10 +202,9 @@ class VideoService:
             )
 
         # Sanitize filename and generate unique storage path
-        safe_filename = _sanitize_filename(file.filename or "video.mp4")
-        file_ext = os.path.splitext(safe_filename)[1].lower() or ".mp4"
-        storage_filename = f"{uuid.uuid4()}{file_ext}"
-        storage_path = os.path.join(settings.upload_dir, user_id, storage_filename)
+        safe_filename = _sanitize_filename(raw_filename)
+        # C-03 FIX: Use hashed, sharded path instead of exposing user_id
+        storage_path = _build_storage_path(user_id, safe_filename, settings.upload_dir)
 
         # Validate path stays within upload directory
         storage_path = _validate_storage_path(storage_path, settings.upload_dir)
@@ -217,6 +257,15 @@ class VideoService:
                 os.remove(storage_path)
             raise ValidationError(
                 "File content does not match a supported video format"
+            )
+
+        # H-05 FIX: Reject files below minimum size
+        if file_size < MIN_FILE_SIZE_BYTES:
+            if os.path.exists(storage_path):
+                os.remove(storage_path)
+            raise ValidationError(
+                f"File too small ({file_size} bytes). "
+                f"Minimum {MIN_FILE_SIZE_BYTES // 1024}KB for a valid video."
             )
 
         # Create database record

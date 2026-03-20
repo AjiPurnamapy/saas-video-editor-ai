@@ -7,6 +7,8 @@ routers, and exception handlers. This is the module that uvicorn loads.
 
 import logging
 import os
+import traceback
+import uuid as _uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -20,6 +22,7 @@ from app.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging_config import setup_logging
 from app.core.rate_limiter import limiter
+from app.core.csrf import verify_csrf_token
 from app.api.auth_routes import router as auth_router
 from app.api.video_routes import router as video_router
 from app.api.job_routes import router as job_router
@@ -77,8 +80,16 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # M-03 FIX: Only allow methods and headers actually needed
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-CSRF-Token",
+            "X-Request-ID",
+        ],
+        expose_headers=["X-Request-ID"],
+        max_age=600,
     )
 
     # Rate limiting
@@ -105,7 +116,21 @@ def create_app() -> FastAPI:
             content={"detail": exc.detail},
         )
 
-    # --- Global Exception Handler ---
+    # --- H-01 FIX: CSRF Middleware ---
+    @application.middleware("http")
+    async def csrf_middleware(request: Request, call_next):
+        """Validate CSRF token on state-changing API requests."""
+        if request.url.path.startswith("/api/"):
+            try:
+                verify_csrf_token(request)
+            except Exception as exc:
+                return JSONResponse(
+                    status_code=exc.status_code if hasattr(exc, 'status_code') else 403,
+                    content={"detail": str(exc.detail) if hasattr(exc, 'detail') else "CSRF validation failed"},
+                )
+        return await call_next(request)
+
+    # --- H-02 FIX: Hardened Global Exception Handler ---
     @application.exception_handler(Exception)
     async def global_exception_handler(
         request: Request,
@@ -113,14 +138,28 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         """Catch unhandled exceptions and return a clean 500 response.
 
-        In development mode, includes the error message for debugging.
-        In production, returns a generic message to avoid leaking internals.
+        NEVER exposes exception details to the client.
+        Generates an incident_id for log correlation instead.
         """
-        logger.error("Unhandled exception: %s %s — %s", request.method, request.url, exc)
-        detail = str(exc) if settings.app_debug else "Internal server error"
+        # Generate incident ID for log <-> support ticket correlation
+        incident_id = _uuid.uuid4().hex[:12]
+
+        # Log FULL details server-side (never sent to client)
+        logger.error(
+            "Unhandled exception: %s %s | incident=%s\n%s",
+            request.method,
+            request.url,
+            incident_id,
+            traceback.format_exc(),
+        )
+
+        # Client gets incident_id only — no internal details
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": detail},
+            content={
+                "detail": "Internal server error",
+                "incident_id": incident_id,
+            },
         )
 
     # --- Routers ---

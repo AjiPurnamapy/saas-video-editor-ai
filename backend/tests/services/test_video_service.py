@@ -72,6 +72,7 @@ def test_delete_video_success_cascades_outputs(video_service, db_session, user_i
 async def test_upload_video_invalid_type(video_service, user_id):
     """Test uploading non-video file raises ValidationError."""
     mock_file = MagicMock(spec=UploadFile)
+    mock_file.filename = "document.pdf"
     mock_file.content_type = "application/pdf"
     
     with pytest.raises(ValidationError, match="Unsupported file type"):
