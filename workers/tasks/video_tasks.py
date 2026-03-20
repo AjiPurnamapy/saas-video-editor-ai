@@ -19,6 +19,7 @@ DESIGN PRINCIPLES:
 import logging
 import os
 import shutil
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from celery import Task
@@ -152,6 +153,25 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
             "Job already %s, skipping: job_id=%s", job.status, job_id
         )
         return {"job_id": job_id, "status": job.status}
+
+    # M-05 FIX: Reject jobs that have been queued too long (possible injection)
+    max_queue_age = timedelta(hours=24)
+    if hasattr(job, 'created_at') and job.created_at:
+        job_age = datetime.now(timezone.utc) - job.created_at.replace(
+            tzinfo=timezone.utc
+        ) if job.created_at.tzinfo is None else datetime.now(
+            timezone.utc
+        ) - job.created_at
+        if job_age > max_queue_age:
+            logger.warning(
+                "Job expired in queue (age=%s): job_id=%s — possible injection",
+                job_age, job_id,
+            )
+            service.update_job_status(
+                job_id, JobStatus.FAILED,
+                error_message="Job expired in queue (older than 24 hours)",
+            )
+            return {"job_id": job_id, "status": "expired"}
 
     # --- Mark as processing ---
     service.update_job_status(job_id, JobStatus.PROCESSING, progress=0)

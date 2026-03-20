@@ -7,12 +7,16 @@ All database and security operations are encapsulated here.
 SECURITY:
 - Failed login attempts are logged for audit trail purposes.
 - H-04 FIX: Password change invalidates ALL active sessions.
+- M-04 FIX: All auth events are recorded to the audit log.
+- M-06 FIX: Account lockout after 10 failed login attempts.
 """
 
+import hashlib
 import logging
 
 from sqlalchemy.orm import Session
 
+from app.core.audit_log import audit, AuditAction
 from app.core.exceptions import AuthenticationError, ConflictError, NotFoundError
 from app.core.security import (
     check_needs_rehash,
@@ -25,6 +29,11 @@ from app.models.user import User
 from app.schemas.user_schema import UserRegisterRequest, UserLoginRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _hash_pii(value: str) -> str:
+    """L-03 FIX: Hash PII for logging — correlatable but not plaintext."""
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
 class AuthService:
@@ -55,7 +64,7 @@ class AuthService:
         """
         existing = self.db.query(User).filter(User.email == data.email).first()
         if existing:
-            logger.warning("Registration denied — duplicate email: %s", data.email)
+            logger.warning("Registration denied — email_hash=%s", _hash_pii(data.email))
             raise ConflictError("Email already registered")
 
         user = User(
@@ -66,7 +75,16 @@ class AuthService:
         self.db.commit()
         self.db.refresh(user)
 
-        logger.info("User registered: id=%s email=%s", user.id, user.email)
+        logger.info("User registered: id=%s email_hash=%s", user.id, _hash_pii(user.email))
+
+        # M-04 FIX: Audit log
+        audit(
+            action=AuditAction.USER_REGISTER,
+            user_id=str(user.id),
+            resource_type="user",
+            success=True,
+        )
+
         return user
 
     def login(
@@ -80,6 +98,9 @@ class AuthService:
         Verifies credentials, creates a Redis session, and returns
         the user along with the session token for cookie setting.
 
+        M-06 FIX: Checks lockout status before attempting authentication.
+        M-04 FIX: Records audit events for login success/failure.
+
         Args:
             data: Login request with email and password.
             ip_address: Client IP for session audit trail.
@@ -89,13 +110,64 @@ class AuthService:
             A tuple of (User, session_token).
 
         Raises:
-            AuthenticationError: If credentials are invalid.
+            AuthenticationError: If credentials are invalid or account is locked.
         """
+        # M-06 FIX: Check lockout BEFORE attempting verification
+        try:
+            from app.core.login_protection import (
+                is_locked_out,
+                record_failed_attempt,
+                clear_failed_attempts,
+            )
+            for identifier in [data.email, ip_address]:
+                if identifier and is_locked_out(identifier):
+                    audit(
+                        action=AuditAction.USER_LOCKED_OUT,
+                        ip_address=ip_address,
+                        success=False,
+                        detail={
+                            "email_hash": hashlib.sha256(
+                                data.email.encode()
+                            ).hexdigest()[:16]
+                        },
+                    )
+                    raise AuthenticationError(
+                        "Too many failed login attempts. Try again in 15 minutes."
+                    )
+            _lockout_available = True
+        except ImportError:
+            _lockout_available = False
+        except AuthenticationError:
+            raise
+        except Exception:
+            # Graceful degradation: if Redis is down, skip lockout
+            _lockout_available = False
+
         user = self.db.query(User).filter(User.email == data.email).first()
         if not user or not verify_password(data.password, user.password_hash):
+            # M-04 FIX: Audit failed login
+            audit(
+                action=AuditAction.USER_LOGIN_FAILED,
+                ip_address=ip_address,
+                success=False,
+                detail={
+                    "email_hash": hashlib.sha256(
+                        data.email.encode()
+                    ).hexdigest()[:16],
+                },
+            )
+            # M-06 FIX: Record failed attempt for lockout
+            if _lockout_available:
+                try:
+                    record_failed_attempt(data.email)
+                    if ip_address:
+                        record_failed_attempt(ip_address)
+                except Exception:
+                    pass  # Graceful degradation
+
             logger.warning(
-                "Login failed: email=%s ip=%s",
-                data.email, ip_address,
+                "Login failed: email_hash=%s ip=%s",
+                _hash_pii(data.email), ip_address,
             )
             raise AuthenticationError("Invalid email or password")
 
@@ -114,7 +186,25 @@ class AuthService:
             user_agent=user_agent,
         )
 
-        logger.info("Login success: id=%s email=%s ip=%s", user.id, user.email, ip_address)
+        # M-06 FIX: Clear failed attempt counters on success
+        if _lockout_available:
+            try:
+                clear_failed_attempts(data.email)
+                if ip_address:
+                    clear_failed_attempts(ip_address)
+            except Exception:
+                pass
+
+        # M-04 FIX: Audit successful login
+        audit(
+            action=AuditAction.USER_LOGIN,
+            user_id=str(user.id),
+            ip_address=ip_address,
+            success=True,
+            detail={"user_agent": user_agent[:100]},
+        )
+
+        logger.info("Login success: id=%s email_hash=%s ip=%s", user.id, _hash_pii(user.email), ip_address)
         return user, session_token
 
     @staticmethod
@@ -162,4 +252,13 @@ class AuthService:
         logger.info(
             "Password changed, invalidated %d sessions: user=%s",
             count, user_id,
+        )
+
+        # M-04 FIX: Audit password change
+        audit(
+            action=AuditAction.USER_PASSWORD_CHANGE,
+            user_id=user_id,
+            resource_type="user",
+            success=True,
+            detail={"sessions_invalidated": count},
         )

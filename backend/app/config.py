@@ -5,13 +5,15 @@ Loads settings from environment variables using pydantic-settings.
 All configuration is centralized here for easy management.
 
 SECURITY:
-- secret_key is validated at startup to prevent insecure defaults in production
-- cookie_secure is enforced in production to require HTTPS
+- C-01: secret_key validated at startup to prevent insecure defaults
+- C-01: cookie_secure enforced in production (HTTPS required)
+- M-03: cors_origins validated to block wildcard and HTTP in production
+- L-04: secret_key_previous supports key rotation without mass logout
 """
 
 import os
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -34,6 +36,9 @@ class Settings(BaseSettings):
 
     # --- Security ---
     secret_key: str = "change-me-to-a-random-64-char-string"
+    # L-04 FIX: Previous key for rotation — sessions signed with this key
+    # remain valid during transition. Set to None when rotation is complete.
+    secret_key_previous: Optional[str] = None
     session_cookie_name: str = "session_id"
     session_max_age_seconds: int = 86400  # 24 hours
     cookie_secure: bool = False  # Set True in production (HTTPS)
@@ -85,6 +90,23 @@ class Settings(BaseSettings):
             raise ValueError(
                 "COOKIE_SECURE must be True in production (requires HTTPS)."
             )
+        return v
+
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_cors_origins(cls, v: list) -> list:
+        """M-03 FIX: Block wildcard and non-HTTPS origins in production."""
+        env = os.getenv("APP_ENV", "development")
+        if env == "production":
+            for origin in v:
+                if origin == "*":
+                    raise ValueError(
+                        "CORS wildcard '*' is not allowed in production"
+                    )
+                if not origin.startswith("https://"):
+                    raise ValueError(
+                        f"CORS origins must use HTTPS in production: {origin}"
+                    )
         return v
 
     model_config = {

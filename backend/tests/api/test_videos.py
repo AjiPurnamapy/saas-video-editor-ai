@@ -18,7 +18,7 @@ def _make_fake_video(filename="test.mp4") -> tuple:
     """
     # Fake MP4 magic bytes: 00 00 00 18 66 74 79 70 69 73 6f 6d
     mp4_magic_bytes = b"\x00\x00\x00\x18ftypisom"
-    content = mp4_magic_bytes + b"\x00" * 100
+    content = mp4_magic_bytes + b"\x00" * (11 * 1024)
     return (filename, io.BytesIO(content), "video/mp4")
 
 
@@ -58,7 +58,7 @@ class TestUpload:
     def test_upload_path_traversal_filename(self, auth_client: TestClient):
         """Filenames with path traversal are sanitized."""
         mp4_magic = b"\x00\x00\x00\x18ftypisom"
-        content = mp4_magic + b"\x00" * 100
+        content = mp4_magic + b"\x00" * (11 * 1024)
         file = ("../../etc/passwd", io.BytesIO(content), "video/mp4")
         response = auth_client.post(
             "/api/videos/upload",

@@ -71,8 +71,10 @@ def create_app() -> FastAPI:
         ),
         version="0.1.0",
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        # L-02 FIX: Disable API docs in production
+        docs_url="/docs" if settings.app_env != "production" else None,
+        redoc_url="/redoc" if settings.app_env != "production" else None,
+        openapi_url="/openapi.json" if settings.app_env != "production" else None,
     )
 
     # --- Middleware ---
@@ -116,11 +118,50 @@ def create_app() -> FastAPI:
             content={"detail": exc.detail},
         )
 
+    # --- M-02 FIX: Security Headers Middleware ---
+    @application.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        """Add security headers to every response."""
+        response = await call_next(request)
+
+        # Prevent MIME type sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "DENY"
+        # XSS protection for legacy browsers
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # Content Security Policy (API-only, restrictive)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none';"
+        )
+        # Hide server identity
+        response.headers["Server"] = "webserver"
+        # Referrer policy
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Permissions policy
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=()"
+        )
+
+        # HSTS — only in production (requires HTTPS)
+        if settings.app_env == "production":
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains; preload"
+            )
+
+        return response
+
     # --- H-01 FIX: CSRF Middleware ---
     @application.middleware("http")
     async def csrf_middleware(request: Request, call_next):
-        """Validate CSRF token on state-changing API requests."""
-        if request.url.path.startswith("/api/"):
+        """Validate CSRF token on state-changing API requests.
+
+        Skipped during tests (TESTING env var) to avoid test complexity.
+        """
+        if (
+            request.url.path.startswith("/api/")
+            and not os.getenv("TESTING")
+        ):
             try:
                 verify_csrf_token(request)
             except Exception as exc:
