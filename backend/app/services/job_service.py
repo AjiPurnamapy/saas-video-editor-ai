@@ -220,9 +220,8 @@ class JobService:
         # Revoke the Celery task (signal worker to stop)
         if job.task_id:
             try:
-                from workers.celery_app import celery_app
-                celery_app.control.revoke(job.task_id, terminate=False)
-                logger.info("Celery task revoked: task=%s", job.task_id)
+                from app.core.celery_client import revoke_task
+                revoke_task(job.task_id)
             except Exception as exc:
                 # Non-critical: worker will check DB status anyway
                 logger.warning("Failed to revoke task %s: %s", job.task_id, exc)

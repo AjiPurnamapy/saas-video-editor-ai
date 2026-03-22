@@ -17,11 +17,23 @@ from fastapi import HTTPException, Request, status
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 
-# Paths exempt from CSRF validation (login/register don't have a token yet)
+# Paths exempt from CSRF validation
+# - login/register: user doesn't have a CSRF token yet
+# - verify/forgot/reset: accessed from email links (no session cookie)
+# - download: token-based auth, no session needed
 _CSRF_EXEMPT_PATHS = {
     "/api/auth/login",
     "/api/auth/register",
+    "/api/auth/verify-email",
+    "/api/auth/forgot-password",
+    "/api/auth/reset-password",
+    "/api/auth/resend-verification",
 }
+
+# Paths exempt via prefix matching (for dynamic path segments)
+_CSRF_EXEMPT_PREFIXES = (
+    "/api/outputs/download/",
+)
 
 
 def generate_csrf_token() -> str:
@@ -67,8 +79,12 @@ def verify_csrf_token(request: Request) -> None:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return
 
-    # Skip verification for exempt paths (login, register)
+    # Skip verification for exempt paths (login, register, email flows)
     if request.url.path in _CSRF_EXEMPT_PATHS:
+        return
+
+    # Skip verification for exempt prefixes (e.g., /api/outputs/download/{token})
+    if any(request.url.path.startswith(p) for p in _CSRF_EXEMPT_PREFIXES):
         return
 
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME)

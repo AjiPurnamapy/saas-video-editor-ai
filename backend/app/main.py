@@ -27,6 +27,7 @@ from app.api.auth_routes import router as auth_router
 from app.api.video_routes import router as video_router
 from app.api.job_routes import router as job_router
 from app.api.output_routes import router as output_router
+from app.api.progress_routes import router as progress_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -156,11 +157,12 @@ def create_app() -> FastAPI:
     async def csrf_middleware(request: Request, call_next):
         """Validate CSRF token on state-changing API requests.
 
-        Skipped during tests (TESTING env var) to avoid test complexity.
+        S-17 FIX: Uses settings.app_env instead of os.getenv("TESTING")
+        to prevent accidental CSRF bypass in production.
         """
         if (
             request.url.path.startswith("/api/")
-            and not os.getenv("TESTING")
+            and settings.app_env not in ("testing",)
         ):
             try:
                 verify_csrf_token(request)
@@ -208,15 +210,26 @@ def create_app() -> FastAPI:
     application.include_router(video_router, prefix="/api")
     application.include_router(job_router, prefix="/api")
     application.include_router(output_router, prefix="/api")
+    application.include_router(progress_router, prefix="/api")
 
     # --- Health Check ---
+    # S-22 FIX: Simple TTL cache to avoid DB/Redis polling overhead
+    import time as _time
+    _health_cache: dict = {"result": None, "expires_at": 0.0}
+    _HEALTH_CACHE_TTL = 5  # seconds
+
     @application.get("/health", tags=["Health"])
     async def health_check() -> dict:
         """Health check endpoint for load balancers and monitoring.
 
         Verifies connectivity to PostgreSQL and Redis.
         Returns individual component statuses and an overall status.
+        Cached for 5 seconds to avoid excessive DB/Redis polling.
         """
+        now = _time.monotonic()
+        if _health_cache["result"] and now < _health_cache["expires_at"]:
+            return _health_cache["result"]
+
         result = {
             "status": "healthy",
             "app": settings.app_name,
@@ -244,6 +257,9 @@ def create_app() -> FastAPI:
             logger.error("Health check — redis failed: %s", exc)
             result["components"]["redis"] = "error"
             result["status"] = "degraded"
+
+        _health_cache["result"] = result
+        _health_cache["expires_at"] = now + _HEALTH_CACHE_TTL
 
         return result
 

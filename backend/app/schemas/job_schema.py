@@ -26,7 +26,6 @@ class JobResponse(BaseModel):
     video_id: str
     status: str
     progress: int
-    task_id: Optional[str] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -40,7 +39,6 @@ class JobStartResponse(BaseModel):
     id: str
     video_id: str
     status: str
-    task_id: Optional[str] = None
     message: str = "Processing job started"
 
 

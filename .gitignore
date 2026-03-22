@@ -56,3 +56,6 @@ celerybeat-schedule.*
 # Audit
 audit_security.md
 start_worker_backend.md
+
+# Chat
+chat/

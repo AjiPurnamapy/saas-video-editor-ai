@@ -230,7 +230,7 @@ class VideoService:
                         raise FileTooLargeError(
                             f"File size exceeds {settings.max_upload_size_mb}MB limit"
                         )
-                    # Validate magic bytes on the first chunk
+                    # S-14 FIX: Validate magic bytes with EOF edge case handling
                     if not magic_validated:
                         header_buf += chunk
                         if len(header_buf) >= 16:
@@ -242,6 +242,15 @@ class VideoService:
                                 )
                             magic_validated = True
                     dest.write(chunk)
+
+                # S-14 FIX: If loop ended (EOF) before 16 bytes, reject immediately
+                if not magic_validated:
+                    dest.close()
+                    if os.path.exists(storage_path):
+                        os.remove(storage_path)
+                    raise ValidationError(
+                        "File too small to validate — no video magic bytes found"
+                    )
         except (FileTooLargeError, ValidationError):
             raise
         except Exception as exc:
@@ -250,14 +259,6 @@ class VideoService:
                 os.remove(storage_path)
             logger.error("Upload failed for user %s: %s", user_id, exc)
             raise
-
-        # Reject files too small to contain valid magic bytes
-        if not magic_validated:
-            if os.path.exists(storage_path):
-                os.remove(storage_path)
-            raise ValidationError(
-                "File content does not match a supported video format"
-            )
 
         # H-05 FIX: Reject files below minimum size
         if file_size < MIN_FILE_SIZE_BYTES:

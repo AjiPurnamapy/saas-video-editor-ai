@@ -8,8 +8,6 @@ SECURITY (C-02 FIX):
 - Start: 20/min, 100/hour | Get: 60/min | Cancel: 20/min
 """
 
-import os
-import sys
 
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
@@ -18,14 +16,6 @@ from app.core.auth import get_current_user
 from app.core.rate_limiter import limiter
 from app.database import get_db
 from app.models.user import User
-
-# H2 Fix: Centralize sys.path setup at module level (not per-request)
-# This ensures 'workers' package is importable when job_routes is loaded.
-_project_root = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
 from app.schemas.job_schema import (
     JobCancelResponse,
     JobResponse,
@@ -72,16 +62,17 @@ def start_job(
     service = JobService(db)
     job = service.create_job(data.video_id, current_user.id)
 
-    # Dispatch to Celery worker
-    from workers.tasks.video_tasks import process_video
-    result = process_video.delay(job.id)
-    service.set_task_id(job.id, result.id)
+    # S-23 FIX: Dispatch via celery_client (no sys.path hack needed)
+    from app.core.celery_client import dispatch_task
+    task_id = dispatch_task(
+        "workers.tasks.video_tasks.process_video", args=[job.id]
+    )
+    service.set_task_id(job.id, task_id)
 
     return JobStartResponse(
         id=job.id,
         video_id=job.video_id,
         status=job.status,
-        task_id=result.id,
     )
 
 

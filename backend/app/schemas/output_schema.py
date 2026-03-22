@@ -11,11 +11,14 @@ from pydantic import BaseModel
 
 
 class OutputResponse(BaseModel):
-    """Processed video output information returned by the API."""
+    """Processed video output information returned by the API.
+
+    S-16 FIX: file_url (internal filesystem path) is NOT exposed.
+    Use the /download-url endpoint to get a signed URL instead.
+    """
 
     id: str
     video_id: str
-    file_url: str
     resolution: Optional[str] = None
     duration: Optional[float] = None
     file_size_bytes: Optional[int] = None
@@ -29,3 +32,10 @@ class OutputListResponse(BaseModel):
 
     outputs: List[OutputResponse]
     total: int
+
+
+class DownloadUrlResponse(BaseModel):
+    """Signed download URL response."""
+
+    download_url: str
+    expires_in: int  # seconds until expiry

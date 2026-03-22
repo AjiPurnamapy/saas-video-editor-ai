@@ -17,12 +17,11 @@ from pydantic import BaseModel
 class VideoResponse(BaseModel):
     """Video information returned by the API.
 
-    Note: raw_video_path is NOT included — internal file paths
-    must never be exposed to clients.
+    Note: raw_video_path and user_id are NOT included — internal
+    details must never be exposed to clients.
     """
 
     id: str
-    user_id: str
     original_filename: Optional[str] = None
     duration: Optional[float] = None
     file_size_bytes: Optional[int] = None

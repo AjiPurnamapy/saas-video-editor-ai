@@ -14,10 +14,12 @@ import pytest
 
 # SET BEFORE APP IMPORT
 os.environ["TESTING"] = "1"
+os.environ["APP_ENV"] = "testing"  # S-17: CSRF middleware uses app_env, not TESTING
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.database import get_db
@@ -26,12 +28,14 @@ from app.models.base import Base
 # Database fixtures
 # ---------------------------------------------------------------------------
 
-# Use SQLite in-memory for fast, isolated tests
-TEST_DATABASE_URL = "sqlite:///./test.db"
+# S-15 FIX: Use in-memory SQLite (no leftover test.db files on disk)
+# StaticPool ensures all threads share the same in-memory database
+TEST_DATABASE_URL = "sqlite:///:memory:"
 
 _test_engine = create_engine(
     TEST_DATABASE_URL,
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(
     autocommit=False,
@@ -114,10 +118,17 @@ def auth_client(client: TestClient, test_user_data: dict) -> TestClient:
 
     Registers a user, logs in, and the client retains the
     session cookie for subsequent requests.
+
+    S-20 FIX: Verifies auth actually works after login (not just 200).
     """
     # Register
     client.post("/api/auth/register", json=test_user_data)
     # Login (sets cookie on the client)
     response = client.post("/api/auth/login", json=test_user_data)
-    assert response.status_code == 200
+    assert response.status_code == 200, f"Login failed: {response.json()}"
+
+    # Verify auth works — if session cookie is missing, this will fail
+    me_response = client.get("/api/auth/me")
+    assert me_response.status_code == 200, "Session cookie not working after login"
+
     return client

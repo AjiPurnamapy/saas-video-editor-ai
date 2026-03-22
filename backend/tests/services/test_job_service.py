@@ -43,11 +43,8 @@ def test_cancel_job_success_and_revokes_celery(db_session, shared_video, user_id
     service = JobService(db_session)
     job = service.create_job(shared_video.id, user_id)
     
-    # Mock celery app - the cancel_job method does a lazy import:
-    #   from workers.celery_app import celery_app
-    #   celery_app.control.revoke(...)
-    # So we mock the module-level celery_app inside workers.celery_app
-    mock_revoke = mocker.patch('workers.celery_app.celery_app.control.revoke')
+    # S-23 FIX: Mock the new celery_client.revoke_task instead of workers.celery_app
+    mock_revoke = mocker.patch('app.core.celery_client.revoke_task')
     
     # Give the job a fake task ID
     task_id = "test-task-123"
@@ -57,8 +54,7 @@ def test_cancel_job_success_and_revokes_celery(db_session, shared_video, user_id
     cancelled_job = service.cancel_job(job.id, user_id)
     
     assert cancelled_job.status == JobStatus.CANCELLED
-    # The actual code uses terminate=False
-    mock_revoke.assert_called_once_with(task_id, terminate=False)
+    mock_revoke.assert_called_once_with(task_id)
 
 def test_cancel_job_wrong_user(db_session, shared_video, user_id):
     """Test cancelling someone else's job raises NotFoundError (ownership check fails)."""

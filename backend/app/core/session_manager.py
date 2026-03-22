@@ -107,6 +107,9 @@ def delete_session(session_id: str) -> None:
 def refresh_session(session_id: str) -> bool:
     """Refresh the TTL on an existing session (sliding expiration).
 
+    S-18 FIX: Also refreshes the user session index TTL so that
+    delete_all_user_sessions() can still find long-lived sessions.
+
     Args:
         session_id: The session token to refresh.
 
@@ -114,7 +117,14 @@ def refresh_session(session_id: str) -> bool:
         True if the session exists and was refreshed, False otherwise.
     """
     key = _session_key(session_id)
-    return bool(_redis_client.expire(key, settings.session_max_age_seconds))
+    refreshed = bool(_redis_client.expire(key, settings.session_max_age_seconds))
+    if refreshed:
+        # Refresh user index TTL too
+        data = get_session(session_id)
+        if data and "user_id" in data:
+            user_index_key = f"{SESSION_USER_INDEX_PREFIX}{data['user_id']}"
+            _redis_client.expire(user_index_key, settings.session_max_age_seconds)
+    return refreshed
 
 
 def delete_all_user_sessions(user_id: str) -> int:

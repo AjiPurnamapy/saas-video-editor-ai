@@ -135,7 +135,7 @@ def get_video(
 
 @router.delete(
     "/{video_id}",
-    response_model=MessageResponse,
+    status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a video",
 )
 @limiter.limit("20/minute")
@@ -144,7 +144,7 @@ def delete_video(
     video_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> MessageResponse:
+) -> None:
     """Delete a video and its stored file.
 
     Only allows deletion of videos owned by the authenticated user.
@@ -158,8 +158,7 @@ def delete_video(
         current_user: The authenticated user (injected).
 
     Returns:
-        A confirmation message.
+        204 No Content on success.
     """
     service = VideoService(db)
     service.delete_video(video_id, current_user.id)
-    return MessageResponse(message="Video deleted successfully")

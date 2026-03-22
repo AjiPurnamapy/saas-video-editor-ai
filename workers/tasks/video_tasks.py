@@ -206,10 +206,13 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
         )
         from app.utils.file_utils import cleanup_temp_files
 
+        from app.core.progress_publisher import publish_progress
+
         # ── Step 1: Get video info (5%) ──
         _check_cancelled(db, job_id, temp_files)
         logger.info("Step 1/5: Getting video info — %s", video_path)
         service.update_job_status(job_id, JobStatus.PROCESSING, progress=5)
+        publish_progress(job_id, "processing", 5, step="Analyzing video")
         video_info = get_video_info(video_path)
         duration = float(video_info.get("format", {}).get("duration", 0))
 
@@ -217,6 +220,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
         _check_cancelled(db, job_id, temp_files)
         logger.info("Step 2/5: Extracting audio — %s", video_path)
         service.update_job_status(job_id, JobStatus.PROCESSING, progress=20)
+        publish_progress(job_id, "processing", 20, step="Extracting audio")
         with ffmpeg_semaphore:
             audio_path = extract_audio(video_path)
         temp_files.append(audio_path)
@@ -225,6 +229,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
         _check_cancelled(db, job_id, temp_files)
         logger.info("Step 3/5: Detecting silence — %s", audio_path)
         service.update_job_status(job_id, JobStatus.PROCESSING, progress=40)
+        publish_progress(job_id, "processing", 40, step="Detecting silence")
         with ffmpeg_semaphore:
             silences = detect_silence(audio_path)
 
@@ -241,6 +246,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
             "Step 4/5: Cutting %d clips — %s", len(clips_timestamps), video_path
         )
         service.update_job_status(job_id, JobStatus.PROCESSING, progress=60)
+        publish_progress(job_id, "processing", 60, step="Cutting clips")
 
         output_dir = os.path.join(
             os.path.dirname(video_path), "outputs", job_id
@@ -257,6 +263,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
             progress = 60 + int((i / max(len(clip_paths), 1)) * 20)
             _check_cancelled(db, job_id, temp_files)
             service.update_job_status(job_id, JobStatus.PROCESSING, progress=progress)
+            publish_progress(job_id, "processing", progress, step=f"Resizing clip {i+1}/{len(clip_paths)}")
 
             resized_path = None
             with ffmpeg_semaphore:
@@ -269,6 +276,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
         _check_cancelled(db, job_id, temp_files)
         logger.info("Step 5/5: Saving %d outputs to database", len(resized_paths))
         service.update_job_status(job_id, JobStatus.PROCESSING, progress=90)
+        publish_progress(job_id, "processing", 90, step="Saving outputs")
 
         for resized_path in resized_paths:
             file_size = os.path.getsize(resized_path) if os.path.exists(resized_path) else None
@@ -285,6 +293,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
 
         # ── Mark as completed ──
         service.update_job_status(job_id, JobStatus.COMPLETED, progress=100)
+        publish_progress(job_id, "completed", 100, step="Done")
         video.status = VideoStatus.COMPLETED
         db.commit()
 
@@ -302,6 +311,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
 
     except _CancelledError:
         # Job was cancelled — already handled by _check_cancelled
+        publish_progress(job_id, "cancelled", job.progress if job else 0, step="Cancelled")
         return {"job_id": job_id, "status": "cancelled"}
 
     except Exception as exc:
@@ -328,6 +338,11 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
             from app.utils.file_utils import cleanup_temp_files
             cleanup_temp_files(*temp_files)
 
+            # S-19 FIX: Close DB session before retry to prevent leak
+            # (retry spawns a new task invocation with its own session)
+            db.close()
+            self._db = None
+
             raise self.retry(exc=exc)
 
         # All retries exhausted — mark as failed
@@ -340,6 +355,10 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
                 JobStatus.FAILED,
                 progress=job.progress if job else 0,
                 error_message=str(exc)[:1000],
+            )
+            publish_progress(
+                job_id, "failed", job.progress if job else 0,
+                step="Failed", error=str(exc)[:500],
             )
             video = db.query(Video).filter(Video.id == job.video_id).first()
             if video:

@@ -31,6 +31,15 @@ slowapi==0.1.9
 # --- Storage (S3) ---
 boto3==1.35.92
 
+# --- Token Signing ---
+itsdangerous==2.2.0
+
+# --- Email ---
+aiosmtplib==3.0.2
+
+# --- SSE (Server-Sent Events) ---
+sse-starlette==2.2.1
+
 # --- HTTP ---
 httpx==0.28.1
 

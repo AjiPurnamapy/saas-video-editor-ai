@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 500
 
+    # --- Email / SMTP ---
+    smtp_host: str = ""          # Empty = dev mode (log to console)
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "noreply@aivideoeditor.com"
+
+    # --- Frontend ---
+    frontend_url: str = "http://localhost:3000"
+
     # ---- C-01 FIX: Validate security settings at startup ----
 
     @field_validator("secret_key")

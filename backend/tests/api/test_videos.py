@@ -139,7 +139,7 @@ class TestDeleteVideo:
         video_id = upload_resp.json()["id"]
 
         del_resp = auth_client.delete(f"/api/videos/{video_id}")
-        assert del_resp.status_code == 200
+        assert del_resp.status_code == 204
 
         # Verify it's gone
         get_resp = auth_client.get(f"/api/videos/{video_id}")

@@ -79,6 +79,7 @@ class UserResponse(BaseModel):
 
     id: str
     email: str
+    is_email_verified: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -109,4 +110,43 @@ class ChangePasswordRequest(BaseModel):
     @classmethod
     def validate_new_password_strength(cls, v: str) -> str:
         """M-01 FIX: Enforce password complexity on password change too."""
+        return _validate_password_strength(v)
+
+
+class EmailTokenRequest(BaseModel):
+    """Request body for email verification."""
+
+    token: str = Field(
+        ...,
+        description="Email verification or password reset token",
+    )
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Request body for forgot password."""
+
+    email: EmailStr = Field(
+        ...,
+        description="Email address of the account",
+    )
+
+
+class ResetPasswordRequest(BaseModel):
+    """Request body for resetting password with a token."""
+
+    token: str = Field(
+        ...,
+        description="Password reset token from email",
+    )
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, must include upper/lower/digit/special)",
+    )
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_reset_password_strength(cls, v: str) -> str:
+        """Enforce password complexity on password reset."""
         return _validate_password_strength(v)

@@ -13,6 +13,7 @@ SECURITY:
 
 import hashlib
 import logging
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -24,11 +25,17 @@ from app.core.security import (
     verify_password,
     generate_session_token,
 )
-from app.core.session_manager import create_session, delete_session, delete_all_user_sessions
+from app.core.session_manager import (
+    create_session, delete_session, delete_all_user_sessions,
+    _redis_client, SESSION_USER_INDEX_PREFIX,
+)
 from app.models.user import User
 from app.schemas.user_schema import UserRegisterRequest, UserLoginRequest
 
 logger = logging.getLogger(__name__)
+
+# S-06 FIX: Limit concurrent sessions per user
+MAX_CONCURRENT_SESSIONS = 5
 
 
 def _hash_pii(value: str) -> str:
@@ -177,6 +184,21 @@ class AuthService:
             self.db.commit()
             logger.info("Password rehashed for user: %s", user.id)
 
+        # S-06 FIX: Enforce concurrent session limit
+        try:
+            user_index_key = f"{SESSION_USER_INDEX_PREFIX}{user.id}"
+            active_sessions = _redis_client.smembers(user_index_key)
+            if len(active_sessions) >= MAX_CONCURRENT_SESSIONS:
+                # Evict oldest session (FIFO by session token for determinism)
+                oldest = sorted(active_sessions)[0]
+                delete_session(oldest)
+                logger.info(
+                    "Session evicted (limit=%d): user=%s",
+                    MAX_CONCURRENT_SESSIONS, user.id,
+                )
+        except Exception:
+            pass  # Graceful degradation if Redis unavailable
+
         # Create session in Redis
         session_token = generate_session_token()
         create_session(
@@ -261,4 +283,139 @@ class AuthService:
             resource_type="user",
             success=True,
             detail={"sessions_invalidated": count},
+        )
+
+    def verify_email(self, token: str) -> User:
+        """Verify a user's email address using a signed token.
+
+        Args:
+            token: The signed email verification token.
+
+        Returns:
+            The verified User model.
+
+        Raises:
+            AuthenticationError: If the token is invalid or expired.
+            NotFoundError: If the user doesn't exist.
+        """
+        from app.core.email_token import verify_verification_token
+
+        user_id = verify_verification_token(token)
+        if not user_id:
+            raise AuthenticationError("Invalid or expired verification token")
+
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise NotFoundError("User not found")
+
+        if user.is_email_verified:
+            logger.info("Email already verified: user=%s", user_id)
+            return user
+
+        from datetime import datetime, timezone
+        user.is_email_verified = True
+        user.email_verified_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+        logger.info("Email verified: user=%s", user_id)
+        audit(
+            action=AuditAction.USER_REGISTER,
+            user_id=user_id,
+            resource_type="user",
+            success=True,
+            detail={"event": "email_verified"},
+        )
+        return user
+
+    @staticmethod
+    def generate_verification_token(user_id: str) -> str:
+        """Generate a verification token for a user.
+
+        Args:
+            user_id: The user UUID.
+
+        Returns:
+            A signed verification token string.
+        """
+        from app.core.email_token import generate_verification_token
+        return generate_verification_token(user_id)
+
+    def request_password_reset(self, email: str) -> Optional[str]:
+        """Generate a password reset token if the email exists.
+
+        Always returns successfully (even if email not found) to
+        prevent user enumeration attacks.
+
+        Args:
+            email: The email address to send the reset link to.
+
+        Returns:
+            The reset token if user was found (for sending email),
+            None if user not found.
+        """
+        user = self.db.query(User).filter(User.email == email).first()
+        if not user:
+            # Don't reveal whether the email exists
+            logger.info(
+                "Password reset requested for unknown email_hash=%s",
+                _hash_pii(email),
+            )
+            return None
+
+        from app.core.email_token import generate_reset_token
+        token = generate_reset_token(str(user.id))
+
+        logger.info(
+            "Password reset token generated: user=%s",
+            user.id,
+        )
+        audit(
+            action=AuditAction.USER_PASSWORD_CHANGE,
+            user_id=str(user.id),
+            resource_type="user",
+            success=True,
+            detail={"event": "reset_requested"},
+        )
+        return token
+
+    def reset_password(self, token: str, new_password: str) -> None:
+        """Reset a user's password using a signed token.
+
+        Validates the token, sets the new password, and invalidates
+        all active sessions.
+
+        Args:
+            token: The signed password reset token.
+            new_password: The new password to set.
+
+        Raises:
+            AuthenticationError: If the token is invalid or expired.
+            NotFoundError: If the user doesn't exist.
+        """
+        from app.core.email_token import verify_reset_token
+
+        user_id = verify_reset_token(token)
+        if not user_id:
+            raise AuthenticationError("Invalid or expired reset token")
+
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise NotFoundError("User not found")
+
+        user.password_hash = hash_password(new_password)
+        self.db.commit()
+
+        # Invalidate ALL sessions
+        count = delete_all_user_sessions(user_id)
+        logger.info(
+            "Password reset completed, invalidated %d sessions: user=%s",
+            count, user_id,
+        )
+
+        audit(
+            action=AuditAction.USER_PASSWORD_CHANGE,
+            user_id=user_id,
+            resource_type="user",
+            success=True,
+            detail={"event": "password_reset", "sessions_invalidated": count},
         )

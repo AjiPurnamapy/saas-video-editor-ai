@@ -34,4 +34,9 @@ def get_user_id_or_ip(request: Request) -> str:
 
 
 # Shared limiter instance — imported by route modules and main.py
-limiter = Limiter(key_func=get_user_id_or_ip, enabled=not _is_testing)
+# S-11 FIX: headers_enabled returns X-RateLimit-* headers to clients
+limiter = Limiter(
+    key_func=get_user_id_or_ip,
+    enabled=not _is_testing,
+    headers_enabled=True,
+)
