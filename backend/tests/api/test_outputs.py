@@ -14,7 +14,7 @@ def test_list_outputs_success(auth_client: TestClient, db_session):
     # Setup output
     from app.models.output import Output
     output_id = str(uuid.uuid4())
-    output = Output(id=output_id, video_id=video_id, file_url="/tmp/output.mp4")
+    output = Output(id=output_id, video_id=video_id, file_path="/tmp/output.mp4")
     db_session.add(output)
     db_session.commit()
     
@@ -35,7 +35,7 @@ def test_get_output_success(auth_client: TestClient, db_session):
     # Setup output
     from app.models.output import Output
     output_id = str(uuid.uuid4())
-    output = Output(id=output_id, video_id=video_id, file_url="/tmp/output.mp4")
+    output = Output(id=output_id, video_id=video_id, file_path="/tmp/output.mp4")
     db_session.add(output)
     db_session.commit()
     

@@ -209,24 +209,25 @@ class VideoService:
         # Validate path stays within upload directory
         storage_path = _validate_storage_path(storage_path, settings.upload_dir)
 
-        # Stream file to disk in chunks (never loads full file into RAM)
+        # Fix #6: Stream to temp file, then atomic rename on success
+        # If process crashes mid-upload, only a .tmp file remains — no orphans
         max_bytes = settings.max_upload_size_mb * 1024 * 1024
         os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+        tmp_path = storage_path + ".tmp"
 
         file_size = 0
         header_buf = b""
         magic_validated = False
         try:
-            with open(storage_path, "wb") as dest:
+            with open(tmp_path, "wb") as dest:
                 while True:
                     chunk = await file.read(UPLOAD_CHUNK_SIZE)
                     if not chunk:
                         break
                     file_size += len(chunk)
                     if file_size > max_bytes:
-                        # Clean up partial file before raising
                         dest.close()
-                        os.remove(storage_path)
+                        os.remove(tmp_path)
                         raise FileTooLargeError(
                             f"File size exceeds {settings.max_upload_size_mb}MB limit"
                         )
@@ -236,7 +237,7 @@ class VideoService:
                         if len(header_buf) >= 16:
                             if not _validate_file_magic(header_buf):
                                 dest.close()
-                                os.remove(storage_path)
+                                os.remove(tmp_path)
                                 raise ValidationError(
                                     "File content does not match a supported video format"
                                 )
@@ -246,28 +247,31 @@ class VideoService:
                 # S-14 FIX: If loop ended (EOF) before 16 bytes, reject immediately
                 if not magic_validated:
                     dest.close()
-                    if os.path.exists(storage_path):
-                        os.remove(storage_path)
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
                     raise ValidationError(
                         "File too small to validate — no video magic bytes found"
                     )
         except (FileTooLargeError, ValidationError):
             raise
         except Exception as exc:
-            # Clean up on any write failure
-            if os.path.exists(storage_path):
-                os.remove(storage_path)
+            # Clean up temp file on any write failure
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             logger.error("Upload failed for user %s: %s", user_id, exc)
             raise
 
         # H-05 FIX: Reject files below minimum size
         if file_size < MIN_FILE_SIZE_BYTES:
-            if os.path.exists(storage_path):
-                os.remove(storage_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             raise ValidationError(
                 f"File too small ({file_size} bytes). "
                 f"Minimum {MIN_FILE_SIZE_BYTES // 1024}KB for a valid video."
             )
+
+        # Atomic rename: .tmp → final path (no partial files in uploads/)
+        os.replace(tmp_path, storage_path)
 
         # Create database record
         video = Video(

@@ -282,7 +282,7 @@ def process_video(self: VideoProcessingTask, job_id: str) -> dict:
             file_size = os.path.getsize(resized_path) if os.path.exists(resized_path) else None
             output_record = Output(
                 video_id=video.id,
-                file_url=resized_path,
+                file_path=resized_path,
                 resolution="1080x1920",
                 duration=None,  # Could be calculated per clip
                 file_size_bytes=file_size,

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 class OutputResponse(BaseModel):
     """Processed video output information returned by the API.
 
-    S-16 FIX: file_url (internal filesystem path) is NOT exposed.
+    S-16 FIX: file_path (internal filesystem path) is NOT exposed.
     Use the /download-url endpoint to get a signed URL instead.
     """
 

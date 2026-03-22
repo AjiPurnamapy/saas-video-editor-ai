@@ -95,6 +95,22 @@ def create_app() -> FastAPI:
         max_age=600,
     )
 
+    # --- Fix #4: X-Request-ID Middleware ---
+    @application.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        """Generate or propagate a unique request ID for tracing.
+
+        If the client sends X-Request-ID, reuse it.
+        Otherwise, generate a new UUID4. The ID is:
+        - Set on the response header for client correlation
+        - Stored in request.state for downstream logging
+        """
+        request_id = request.headers.get("X-Request-ID") or str(_uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     # Rate limiting
     application.state.limiter = limiter
     application.add_exception_handler(

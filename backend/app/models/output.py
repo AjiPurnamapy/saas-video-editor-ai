@@ -7,7 +7,7 @@ video editing pipeline.
 
 from typing import Optional
 
-from sqlalchemy import Float, ForeignKey, String, Uuid
+from sqlalchemy import Float, ForeignKey, Index, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -17,6 +17,9 @@ class Output(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Processed video output model."""
 
     __tablename__ = "outputs"
+    __table_args__ = (
+        Index("ix_outputs_video_created", "video_id", "created_at"),
+    )
 
     video_id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False),
@@ -24,7 +27,7 @@ class Output(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    file_url: Mapped[str] = mapped_column(
+    file_path: Mapped[str] = mapped_column(
         String(2048),
         nullable=False,
     )

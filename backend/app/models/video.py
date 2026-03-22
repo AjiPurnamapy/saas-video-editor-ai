@@ -7,7 +7,7 @@ and can have multiple processing jobs and output files.
 
 from typing import Optional
 
-from sqlalchemy import Enum, Float, ForeignKey, String, Uuid
+from sqlalchemy import Enum, Float, ForeignKey, Index, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -18,6 +18,9 @@ class Video(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Uploaded video model."""
 
     __tablename__ = "videos"
+    __table_args__ = (
+        Index("ix_videos_user_created", "user_id", "created_at"),
+    )
 
     user_id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False),

@@ -198,7 +198,7 @@ def download_output(
         )
 
     # Verify file exists on disk
-    file_path = output.file_url
+    file_path = output.file_path
     if not file_path or not os.path.isfile(file_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
