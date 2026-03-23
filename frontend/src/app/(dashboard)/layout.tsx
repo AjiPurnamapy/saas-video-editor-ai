@@ -1,11 +1,10 @@
 "use client";
 
 import { AuthGuard } from "@/components/auth-guard";
+import { Sidebar } from "@/components/dashboard/sidebar";
+import { Topbar } from "@/components/dashboard/topbar";
+import { UploadDialog } from "@/components/videos/upload-dialog";
 
-/**
- * Dashboard layout — wraps all /dashboard/* routes with AuthGuard.
- * Phase 2 will add sidebar and top bar here.
- */
 export default function DashboardLayout({
   children,
 }: {
@@ -13,7 +12,16 @@ export default function DashboardLayout({
 }) {
   return (
     <AuthGuard>
-      <main className="flex-1">{children}</main>
+      <div className="flex h-screen overflow-hidden">
+        <Sidebar />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Topbar />
+          <main className="flex-1 overflow-y-auto bg-slate-950 p-4 lg:p-6">
+            {children}
+          </main>
+        </div>
+      </div>
+      <UploadDialog />
     </AuthGuard>
   );
 }
