@@ -1,5 +1,5 @@
 # =============================================================================
-# AI Video Editor SaaS - Backend Dependencies
+# AI Video Editor SaaS - Backend Production Dependencies
 # =============================================================================
 
 # --- Web Framework ---
@@ -20,6 +20,7 @@ celery[redis]==5.4.0
 # --- Authentication & Security ---
 argon2-cffi==23.1.0
 python-multipart==0.0.19
+itsdangerous==2.2.0
 
 # --- Validation & Config ---
 pydantic[email]==2.10.4
@@ -28,11 +29,8 @@ pydantic-settings==2.7.1
 # --- Rate Limiting ---
 slowapi==0.1.9
 
-# --- Storage (S3) ---
+# --- Storage (AWS S3) ---
 boto3==1.35.92
-
-# --- Token Signing ---
-itsdangerous==2.2.0
 
 # --- Email ---
 aiosmtplib==3.0.2
@@ -40,8 +38,8 @@ aiosmtplib==3.0.2
 # --- SSE (Server-Sent Events) ---
 sse-starlette==2.2.1
 
-# --- HTTP ---
+# --- HTTP Client ---
 httpx==0.28.1
 
 # --- Utilities ---
-python-dotenv==1.0.1
+python-dotenv==1.0.1
