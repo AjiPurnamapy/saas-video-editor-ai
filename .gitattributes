@@ -1,2 +1,16 @@
+# Default semua file text pakai LF
 * text=auto eol=lf
-*.py text=lf
+
+# Source code
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Shell (penting untuk Docker / Linux)
+*.sh text eol=lf
+
+# Windows script
+*.bat text eol=crlf
