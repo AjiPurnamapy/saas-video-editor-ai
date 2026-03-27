@@ -273,6 +273,29 @@ class VideoService:
         # Atomic rename: .tmp → final path (no partial files in uploads/)
         os.replace(tmp_path, storage_path)
 
+        # --- Duration validation (Saran 2 fix) ---
+        # After the file is safely on disk, probe its duration.
+        # Reject videos longer than MAX_VIDEO_DURATION_SECONDS so
+        # the worker is protected from multi-hour FFmpeg re-encodes.
+        MAX_VIDEO_DURATION_SECONDS = 300  # 5 minutes
+
+        try:
+            from app.utils.ffmpeg_utils import get_video_duration
+            duration = get_video_duration(storage_path)
+            if duration > MAX_VIDEO_DURATION_SECONDS:
+                os.remove(storage_path)
+                raise ValidationError(
+                    f"Video is too long ({duration:.0f}s). "
+                    f"Maximum allowed duration is {MAX_VIDEO_DURATION_SECONDS // 60} minutes."
+                )
+        except (ValidationError, FileTooLargeError):
+            raise
+        except Exception as probe_exc:
+            # If ffprobe fails (e.g. ffprobe not installed), log and allow upload
+            logger.warning(
+                "Could not probe video duration (skipping check): %s", probe_exc
+            )
+
         # Create database record
         video = Video(
             user_id=user_id,

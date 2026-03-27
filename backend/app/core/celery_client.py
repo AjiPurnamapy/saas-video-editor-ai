@@ -41,8 +41,8 @@ def dispatch_task(task_name: str, args: list | None = None) -> str:
     Returns:
         The Celery AsyncResult ID (task_id).
     """
-    result = celery_client.send_task(task_name, args=args or [])
-    logger.info("Task dispatched: name=%s task_id=%s", task_name, result.id)
+    result = celery_client.send_task(task_name, args=args or [], queue="default")
+    logger.info("Task dispatched: name=%s task_id=%s queue=default", task_name, result.id)
     return result.id
 
 

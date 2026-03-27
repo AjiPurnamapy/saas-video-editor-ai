@@ -53,8 +53,25 @@ WorkerSessionLocal = sessionmaker(
     bind=_worker_engine,
 )
 
+# --- Prefork Safety: Dispose inherited DB connections after fork ---
+# Celery's prefork pool forks child workers from the master process.
+# The master creates _worker_engine at import time, opening TCP sockets
+# to PostgreSQL. Forked children inherit those same file descriptors,
+# causing corrupted reads/writes when multiple children share the socket.
+# This signal fires in each child immediately after fork, disposing the
+# inherited pool and forcing each child to open its own clean connections.
+from celery.signals import worker_process_init
+
+@worker_process_init.connect
+def _dispose_db_pool_after_fork(**kwargs):
+    """Dispose inherited DB connections so each forked worker gets its own."""
+    _worker_engine.dispose()
+    logging.getLogger(__name__).info(
+        "Disposed inherited DB pool in forked worker (PID=%s)", os.getpid()
+    )
+
 # Minimum free disk space required before starting a job (bytes)
-MIN_FREE_DISK_BYTES = 2 * 1024 ** 3  # 2 GB
+MIN_FREE_DISK_BYTES = int(0.5 * 1024 ** 3)  # 500 MB
 
 
 def _get_db_session():

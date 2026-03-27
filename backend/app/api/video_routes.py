@@ -9,7 +9,7 @@ SECURITY (C-02 FIX):
 - Upload: 10/min, 50/hour | List/Get: 60/min | Delete: 20/min
 """
 
-from fastapi import APIRouter, Depends, Request, UploadFile, File, Query, status
+from fastapi import APIRouter, Depends, Request, Response, UploadFile, File, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -37,6 +37,7 @@ router = APIRouter(prefix="/videos", tags=["Videos"])
 @limiter.limit("50/hour")
 async def upload_video(
     request: Request,
+    response: Response,
     file: UploadFile = File(..., description="Video file to upload"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -74,6 +75,7 @@ async def upload_video(
 @limiter.limit("60/minute")
 def list_videos(
     request: Request,
+    response: Response,
     skip: int = Query(0, ge=0, description="Records to skip"),
     limit: int = Query(20, ge=1, le=100, description="Records per page"),
     db: Session = Depends(get_db),
@@ -110,6 +112,7 @@ def list_videos(
 @limiter.limit("60/minute")
 def get_video(
     request: Request,
+    response: Response,
     video_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -141,6 +144,7 @@ def get_video(
 @limiter.limit("20/minute")
 def delete_video(
     request: Request,
+    response: Response,
     video_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

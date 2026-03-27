@@ -148,9 +148,12 @@ def create_app() -> FastAPI:
         # XSS protection for legacy browsers
         response.headers["X-XSS-Protection"] = "1; mode=block"
         # Content Security Policy (API-only, restrictive)
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none';"
-        )
+        # Skip strict CSP for Swagger docs in development
+        docs_paths = ("/docs", "/redoc", "/openapi.json")
+        if not request.url.path.startswith(docs_paths):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none';"
+            )
         # Hide server identity
         response.headers["Server"] = "webserver"
         # Referrer policy

@@ -62,6 +62,7 @@ async def _send_email_bg(coro_func, *args) -> None:
 @limiter.limit("3/minute")
 def register(
     request: Request,
+    response: Response,
     data: UserRegisterRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -212,6 +213,7 @@ def get_me(
 @limiter.limit("5/minute")
 def change_password(
     request: Request,
+    response: Response,
     data: ChangePasswordRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -252,6 +254,7 @@ def change_password(
 @limiter.limit("10/minute")
 def verify_email(
     request: Request,
+    response: Response,
     data: EmailTokenRequest,
     db: Session = Depends(get_db),
 ) -> MessageResponse:
@@ -280,6 +283,7 @@ def verify_email(
 @limiter.limit("3/minute")
 def resend_verification(
     request: Request,
+    response: Response,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -317,6 +321,7 @@ def resend_verification(
 @limiter.limit("5/minute")
 def forgot_password(
     request: Request,
+    response: Response,
     data: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -358,6 +363,7 @@ def forgot_password(
 @limiter.limit("5/minute")
 def reset_password(
     request: Request,
+    response: Response,
     data: ResetPasswordRequest,
     db: Session = Depends(get_db),
 ) -> MessageResponse:

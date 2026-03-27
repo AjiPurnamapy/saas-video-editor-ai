@@ -25,7 +25,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Default subprocess timeout (seconds) — prevents hanging on malformed files
-DEFAULT_TIMEOUT = 600  # 10 minutes
+DEFAULT_TIMEOUT = 3600  # 1 hour (was 600 — too short for long videos)
+
+# Dedicated timeout for resize_video: re-encoding is the most CPU-intensive
+# step. A 15-minute video at ultrafast preset can take 30–60 min on slower CPUs.
+RESIZE_TIMEOUT = 7200  # 2 hours
 
 # Regex patterns for input validation
 _RESOLUTION_PATTERN = re.compile(r"^\d{2,5}x\d{2,5}$")
@@ -141,6 +145,7 @@ def _run_ffmpeg(
     args: List[str],
     check: bool = True,
     timeout: int = DEFAULT_TIMEOUT,
+    loglevel: str = "error",
 ) -> subprocess.CompletedProcess:
     """Execute an FFmpeg command safely.
 
@@ -154,6 +159,8 @@ def _run_ffmpeg(
         args: List of command-line arguments (without 'ffmpeg' prefix).
         check: If True, raise CalledProcessError on non-zero exit.
         timeout: Maximum execution time in seconds.
+        loglevel: FFmpeg log verbosity (default 'error'). Use 'info'
+                  for commands that need filter output (e.g. silencedetect).
 
     Returns:
         The completed process result.
@@ -163,7 +170,7 @@ def _run_ffmpeg(
         subprocess.TimeoutExpired: If the process exceeds the timeout.
         FileNotFoundError: If FFmpeg is not installed.
     """
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"] + args
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", loglevel] + args
     logger.debug("Running FFmpeg: %s", " ".join(cmd))
 
     run_kwargs = {
@@ -173,6 +180,7 @@ def _run_ffmpeg(
         "timeout": timeout,
         "shell": False,  # Explicit: never use shell
         "env": _get_restricted_env(),  # C-04: no credentials leak
+        "stdin": subprocess.DEVNULL,  # Prevent FFmpeg blocking on stdin in workers
     }
 
     # C-04: Drop privileges on Linux if running as root
@@ -210,6 +218,7 @@ def _run_ffprobe(
         "timeout": timeout,
         "shell": False,
         "env": _get_restricted_env(),  # C-04: no credentials leak
+        "stdin": subprocess.DEVNULL,  # Prevent FFprobe blocking on stdin in workers
     }
 
     preexec = _get_preexec_fn()
@@ -345,7 +354,7 @@ def detect_silence(
     if not (0.01 <= min_duration <= 60):
         raise ValueError(f"min_duration must be between 0.01 and 60, got {min_duration}")
 
-    # Use the shared _run_ffmpeg wrapper (was previously bypassed)
+    # silencedetect output is logged at INFO level — must use loglevel='info'
     result = _run_ffmpeg(
         [
             "-i", audio_path,
@@ -354,6 +363,7 @@ def detect_silence(
         ],
         check=False,
         timeout=timeout,
+        loglevel="info",
     )
 
     # Parse silence detection output from stderr
@@ -427,7 +437,7 @@ def resize_video(
     video_path: str,
     resolution: str = "1080x1920",
     output_path: Optional[str] = None,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: int = RESIZE_TIMEOUT,
 ) -> str:
     """Resize a video to the specified resolution.
 
@@ -435,7 +445,9 @@ def resize_video(
         video_path: Path to the input video.
         resolution: Target resolution as 'WxH' (e.g., '1080x1920' for 9:16).
         output_path: Path for output. Defaults to appending '_resized'.
-        timeout: Maximum execution time in seconds.
+        timeout: Maximum execution time in seconds. Defaults to RESIZE_TIMEOUT
+                 (2 hours) because libx264 re-encoding of long videos is
+                 extremely CPU-intensive and can take much longer than other steps.
 
     Returns:
         Path to the resized video.
@@ -463,6 +475,8 @@ def resize_video(
             "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
             "-c:a", "copy",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
             output_path,
         ],
         timeout=timeout,

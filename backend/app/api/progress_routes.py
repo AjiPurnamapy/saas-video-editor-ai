@@ -15,10 +15,10 @@ SSE is preferred over WebSocket here because:
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
@@ -33,10 +33,27 @@ from app.services.job_service import JobService
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 logger = logging.getLogger(__name__)
 
+# --- Shared async Redis connection pool for SSE subscribers ---
+# Prevents per-request connection exhaustion under moderate load.
+# All SSE generators reuse connections from this pool.
+_sse_redis_pool: Optional[aioredis.Redis] = None
+
+
+def _get_sse_redis() -> aioredis.Redis:
+    """Get or create the shared async Redis client for SSE subscribers."""
+    global _sse_redis_pool
+    if _sse_redis_pool is None:
+        settings = get_settings()
+        _sse_redis_pool = aioredis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            max_connections=20,  # Shared across all SSE connections
+        )
+    return _sse_redis_pool
+
 
 async def _progress_event_generator(
     job_id: str,
-    redis_url: str,
     request: Request,
 ) -> AsyncGenerator[dict, None]:
     """Generate SSE events from Redis Pub/Sub for a specific job.
@@ -46,14 +63,13 @@ async def _progress_event_generator(
 
     Args:
         job_id: The job UUID to subscribe to.
-        redis_url: Redis connection URL.
         request: FastAPI request — used to detect client disconnect.
 
     Yields:
         Dict with 'event' and 'data' keys for SSE formatting.
     """
     channel = f"{PROGRESS_CHANNEL_PREFIX}{job_id}"
-    r = aioredis.from_url(redis_url, decode_responses=True)
+    r = _get_sse_redis()
     pubsub = r.pubsub()
 
     try:
@@ -106,7 +122,7 @@ async def _progress_event_generator(
     finally:
         await pubsub.unsubscribe(channel)
         await pubsub.close()
-        await r.close()
+        # NOTE: Do NOT close `r` — it's the shared pool, not a per-request client
         logger.info("SSE cleanup complete: job=%s", job_id)
 
 
@@ -121,6 +137,7 @@ async def _progress_event_generator(
 @limiter.limit("30/minute")
 async def stream_job_progress(
     request: Request,
+    response: Response,
     job_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -174,6 +191,5 @@ async def stream_job_progress(
             }
         return EventSourceResponse(_single_event())
 
-    settings = get_settings()
-    generator = _progress_event_generator(job_id, settings.redis_url, request)
+    generator = _progress_event_generator(job_id, request)
     return EventSourceResponse(generator)

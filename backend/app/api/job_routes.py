@@ -9,7 +9,7 @@ SECURITY (C-02 FIX):
 """
 
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -37,6 +37,7 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
 @limiter.limit("100/hour")
 def start_job(
     request: Request,
+    response: Response,
     data: JobStartRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -84,6 +85,7 @@ def start_job(
 @limiter.limit("60/minute")
 def get_job(
     request: Request,
+    response: Response,
     job_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -116,6 +118,7 @@ def get_job(
 @limiter.limit("20/minute")
 def cancel_job(
     request: Request,
+    response: Response,
     job_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

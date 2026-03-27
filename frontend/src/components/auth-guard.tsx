@@ -10,19 +10,20 @@ import { useEffect, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 
 export function AuthGuard({ children }: { children: ReactNode }) {
-  const { data: user, isLoading } = useCurrentUser();
+  const { data: user, isLoading, isError } = useCurrentUser();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !user) {
+    // Redirect to login if: not loading AND (no user OR error fetching user)
+    if (!isLoading && (!user || isError)) {
       router.replace("/login");
     }
-  }, [user, isLoading, router]);
+  }, [user, isLoading, isError, router]);
 
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="flex h-screen items-center justify-center bg-slate-950">
+        <Loader2 className="h-8 w-8 animate-spin text-slate-500" />
       </div>
     );
   }

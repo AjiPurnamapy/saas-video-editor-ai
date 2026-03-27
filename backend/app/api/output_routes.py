@@ -11,7 +11,7 @@ except the download endpoint which uses a signed token for auth.
 import mimetypes
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -99,6 +99,7 @@ def get_output(
 @limiter.limit("30/minute")
 def get_download_url(
     request: Request,
+    response: Response,
     output_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

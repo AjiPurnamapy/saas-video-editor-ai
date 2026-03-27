@@ -23,9 +23,21 @@ export class ApiClientError extends Error {
 }
 
 /**
+ * Read the CSRF token from the cookie set by the backend on login.
+ * The cookie is intentionally non-HTTPOnly so JS can read it.
+ */
+function getCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
  * Core fetch wrapper with:
  * - credentials: "include" for cookie-based auth
  * - Automatic JSON Content-Type for non-FormData bodies
+ * - CSRF token from cookie sent in X-CSRF-Token header
+ * - 15-second timeout
  * - Error response parsing into ApiClientError
  */
 async function request<T>(
@@ -35,16 +47,34 @@ async function request<T>(
   const url = `${API_BASE_URL}${endpoint}`;
   const isFormData = options.body instanceof FormData;
 
+  const csrfToken = getCsrfToken();
   const headers: HeadersInit = {
     ...(isFormData ? {} : { "Content-Type": "application/json" }),
+    ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
     ...((options.headers as Record<string, string>) || {}),
   };
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    credentials: "include", // Send cookies (session_id, csrf)
-  });
+  // Timeout: abort after 15 seconds to prevent infinite hanging
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: "include",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiClientError(0, "Request timed out");
+    }
+    throw new ApiClientError(0, "Network error — is the backend running?");
+  } finally {
+    clearTimeout(timeout);
+  }
 
   // Handle 204 No Content (e.g. DELETE responses)
   if (response.status === 204) {
@@ -95,6 +125,7 @@ export const api = {
   /**
    * Upload a file via multipart/form-data.
    * Supports progress tracking via XMLHttpRequest.
+   * Sends CSRF token + credentials automatically.
    */
   upload: <T>(
     endpoint: string,
@@ -105,6 +136,12 @@ export const api = {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE_URL}${endpoint}`);
       xhr.withCredentials = true;
+
+      // Add CSRF token header
+      const csrfToken = getCsrfToken();
+      if (csrfToken) {
+        xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+      }
 
       if (onProgress) {
         xhr.upload.onprogress = (event) => {
@@ -128,6 +165,8 @@ export const api = {
       };
 
       xhr.onerror = () => reject(new ApiClientError(0, "Network error"));
+      xhr.ontimeout = () => reject(new ApiClientError(0, "Upload timed out"));
+      xhr.timeout = 300000; // 5 minutes for large video uploads
       xhr.send(formData);
     });
   },
